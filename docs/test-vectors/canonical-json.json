@@ -1,0 +1,38 @@
+[
+  {
+    "id": "CJ-1",
+    "description": "Single-level object — keys must be sorted alphabetically",
+    "input": {"z": 1, "a": 2, "m": 3},
+    "expected_canonical": "{\"a\":2,\"m\":3,\"z\":1}"
+  },
+  {
+    "id": "CJ-2",
+    "description": "Nested object — recursive key sort",
+    "input": {"outer": {"z": "last", "a": "first"}, "a": "top"},
+    "expected_canonical": "{\"a\":\"top\",\"outer\":{\"a\":\"first\",\"z\":\"last\"}}"
+  },
+  {
+    "id": "CJ-3",
+    "description": "Array order preserved — arrays are NOT sorted",
+    "input": {"items": [3, 1, 2]},
+    "expected_canonical": "{\"items\":[3,1,2]}"
+  },
+  {
+    "id": "CJ-4",
+    "description": "String escaping preserved",
+    "input": {"msg": "hello\tworld"},
+    "expected_canonical": "{\"msg\":\"hello\\tworld\"}"
+  },
+  {
+    "id": "CJ-5",
+    "description": "Empty object",
+    "input": {},
+    "expected_canonical": "{}"
+  },
+  {
+    "id": "CJ-6",
+    "description": "Hanko version string field",
+    "input": {"version": "hanko/v0.1", "issuer": "hanko-broker@obyw.one"},
+    "expected_canonical": "{\"issuer\":\"hanko-broker@obyw.one\",\"version\":\"hanko/v0.1\"}"
+  }
+]

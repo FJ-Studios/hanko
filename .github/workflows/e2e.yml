@@ -1,0 +1,103 @@
+name: e2e
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ─────────────────────────────────────────────────────────────
+  # Job 1: MemStore + parity (no Docker required — always runs)
+  # ─────────────────────────────────────────────────────────────
+  e2e-memstore:
+    name: e2e / MemStore + cross-lang parity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache: true
+
+      - name: Build
+        run: go build ./...
+
+      - name: Unit tests (broker / crypto / protocol)
+        run: go test -v ./broker/... ./crypto/... ./protocol/...
+
+      - name: Negative fixture tests (N-1 through N-5)
+        run: go test -v -run '^TestN[1-5]' ./tests/negative/
+
+      - name: e2e MemStore lifecycle (TC-01 through TC-12)
+        run: go test -v -run TestLifecycleMemStore ./e2e/...
+
+      - name: Cross-lang parity — canonical JSON vectors (CJ-1 through CJ-6)
+        run: go test -v -run TestCanonicalJSONVectors ./e2e/parity/
+
+      - name: Cross-lang parity — sign/verify vectors (SV-1, SV-2)
+        run: go test -v -run TestSignVerifyVectors ./e2e/parity/
+
+      - name: Cross-lang parity — vector self-consistency check
+        run: go test -v -run TestGenerateVectors ./e2e/parity/
+
+  # ─────────────────────────────────────────────────────────────
+  # Job 2: PgStore (testcontainer — requires Docker)
+  # Runs the same 12 lifecycle cases against a real Postgres instance.
+  # ─────────────────────────────────────────────────────────────
+  e2e-postgres:
+    name: e2e / PgStore (testcontainer)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache: true
+
+      - name: e2e PgStore lifecycle (TC-01 through TC-12)
+        # TestLifecyclePostgres auto-starts testcontainer when HANKO_PG_DSN is unset.
+        # Docker is available on ubuntu-latest runners.
+        run: go test -v -timeout 120s -run TestLifecyclePostgres ./e2e/...
+
+  # ─────────────────────────────────────────────────────────────
+  # Job 3: Full suite with explicit HANKO_PG_DSN (service container)
+  # Uses GitHub Actions service containers so the DSN is static.
+  # ─────────────────────────────────────────────────────────────
+  e2e-postgres-service:
+    name: e2e / PgStore (service container, HANKO_PG_DSN)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: hanko_test
+          POSTGRES_USER: hanko
+          POSTGRES_PASSWORD: hanko
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      HANKO_PG_DSN: "postgres://hanko:hanko@localhost:5432/hanko_test?sslmode=disable"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache: true
+
+      - name: e2e full suite (MemStore + PgStore via HANKO_PG_DSN)
+        run: go test -v -timeout 60s ./e2e/...
+
+      - name: Cross-lang parity suite
+        run: go test -v ./e2e/parity/...
