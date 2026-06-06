@@ -283,6 +283,31 @@ func (s *PGStore) RecordNonce(nonce []byte) {
 		VALUES ('verify', 'ok', $1)`, detailJSON)
 }
 
+// TryRecordNonce atomically checks and records a nonce using INSERT … ON CONFLICT
+// DO NOTHING against the consumed_nonces table (PRIMARY KEY BYTEA).
+// Returns true if this call was the first consumer (row inserted);
+// false if the nonce was already present (replay detected).
+//
+// SECURITY(CRIT-6/F-4.4): single round-trip, no TOCTOU window. Concurrent
+// callers with the same nonce are serialised by Postgres's unique index lock —
+// exactly one INSERT wins, all others see 0 rows affected → false.
+func (s *PGStore) TryRecordNonce(nonce []byte) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	ct, err := s.pool.Exec(ctx, `
+		INSERT INTO consumed_nonces (nonce)
+		VALUES ($1)
+		ON CONFLICT (nonce) DO NOTHING`,
+		nonce,
+	)
+	if err != nil {
+		// Any error (network, timeout) treated as replay to fail closed.
+		return false
+	}
+	return ct.RowsAffected() == 1
+}
+
 // RevocationList returns the current full revocation list from Postgres.
 func (s *PGStore) RevocationList() *protocol.RevocationList {
 	ctx := context.Background()

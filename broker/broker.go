@@ -28,9 +28,21 @@ type Store interface {
 	SaveCap(c *protocol.CapabilityToken) error
 	GetCap(id string) (*protocol.CapabilityToken, error)
 	// NonceUsed returns true if nonce bytes have been recorded as used.
+	// Kept for backward compat; prefer TryRecordNonce for atomic check-and-record.
 	NonceUsed(nonce []byte) bool
-	// RecordNonce records a nonce as consumed (replay protection).
+	// RecordNonce records a nonce as consumed (replay protection, non-atomic).
 	RecordNonce(nonce []byte)
+	// TryRecordNonce atomically marks nonce as consumed and returns true if this
+	// call was the first consumer. Implementations MUST be safe for concurrent
+	// callers: the check and the insert/record are a single atomic operation so
+	// that two goroutines racing on the same nonce cannot both observe "not used"
+	// and then both succeed. The Postgres implementation uses INSERT … ON
+	// CONFLICT DO NOTHING returning a row-count of 0 on replay; MemStore uses a
+	// sync.Mutex-protected map write where only the first writer returns true.
+	//
+	// SECURITY(CRIT-6/F-4.4): use TryRecordNonce in VerifyAttestation — not
+	// the two-pass NonceUsed+RecordNonce which has a TOCTOU window.
+	TryRecordNonce(nonce []byte) bool
 	// RevocationList returns the current pull-model revocation list.
 	RevocationList() *protocol.RevocationList
 	// Revoke records a revocation entry.
@@ -157,9 +169,13 @@ func (b *Broker) IssueAttestation(sigilID string, caps []protocol.CapabilityToke
 //  2. Sigil not revoked (exits 2 on failure).
 //  3. Envelope not expired (exits 3 on failure).
 //  4. Each cap not expired (exits 3 on failure).
-//  5. Each cap nonce not replayed (exits 1 on failure).
+//  5. Each cap nonce atomically check-and-consumed; replay → ReplayAttack
+//     (exits 1 on failure). The atomic TryRecordNonce call closes the
+//     read-then-record window that existed in the prior NonceUsed/RecordNonce
+//     two-step (F-4.4).
 //
-// On success the nonce of each cap is recorded as consumed (one-time-use per OQ-4).
+// Nonces are consumed in-order. If any cap's nonce is a replay the whole
+// call returns ErrReplayAttack and no further nonces are consumed.
 func (b *Broker) VerifyAttestation(env *protocol.AttestationEnvelope) error {
 	// 1. Signature check.
 	body, err := envelopeBody(env)
@@ -183,20 +199,21 @@ func (b *Broker) VerifyAttestation(env *protocol.AttestationEnvelope) error {
 		return protocol.ErrCapExpired
 	}
 
-	// 4+5. Per-cap checks.
+	// 4+5. Per-cap expiry + atomic nonce consumption (F-4.4 fix).
+	//
+	// TryRecordNonce is a single atomic check-and-insert: if two goroutines race
+	// on the same nonce only the first call returns consumed=true; the second
+	// call returns consumed=false (replay detected) without any window between
+	// the check and the record.
 	for _, cap := range env.Caps {
 		if time.Now().After(cap.ExpiresAt) {
 			return protocol.ErrCapExpired
 		}
-		if b.store.NonceUsed(cap.Nonce) {
-			return protocol.ErrNonceReplayed
+		if !b.store.TryRecordNonce(cap.Nonce) {
+			return protocol.ErrReplayAttack
 		}
 	}
 
-	// All checks passed — consume nonces.
-	for _, cap := range env.Caps {
-		b.store.RecordNonce(cap.Nonce)
-	}
 	return nil
 }
 

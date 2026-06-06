@@ -78,6 +78,24 @@ func (m *MemStore) RecordNonce(nonce []byte) {
 	m.nonces[hexEncodeNonce(nonce)] = struct{}{}
 }
 
+// TryRecordNonce atomically checks and records the nonce. It holds a write lock
+// for the entire operation so no two goroutines can both observe "not used"
+// for the same nonce. Returns true only for the first caller; all subsequent
+// callers (including concurrent ones racing on the same nonce) get false.
+//
+// SECURITY(CRIT-6): eliminates the NonceUsed→RecordNonce TOCTOU window.
+// Use TryRecordNonce instead of NonceUsed+RecordNonce in VerifyAttestation.
+func (m *MemStore) TryRecordNonce(nonce []byte) bool {
+	key := hexEncodeNonce(nonce)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, used := m.nonces[key]; used {
+		return false // replay — not the first consumer
+	}
+	m.nonces[key] = struct{}{}
+	return true // first consumer wins
+}
+
 // hexEncodeNonce is a package-internal helper shared by MemStore and MemStoreCloser.
 func hexEncodeNonce(nonce []byte) string { return hex.EncodeToString(nonce) }
 

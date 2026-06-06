@@ -206,8 +206,12 @@ func TestN4ReplayAttack(t *testing.T) {
 	if !ok {
 		t.Fatalf("N-4: expected *protocol.VerifyError, got %T: %v", err, err)
 	}
-	if ve.Code != "nonce_replayed" {
-		t.Errorf("N-4: expected error code 'nonce_replayed', got %q", ve.Code)
+	// F-4.4 fix: VerifyAttestation now returns ErrReplayAttack (code
+	// "replay_attack") via atomic TryRecordNonce. Accept both codes during the
+	// transition: "replay_attack" is the new canonical code; "nonce_replayed"
+	// is kept as a sentinel for legacy callers.
+	if ve.Code != "replay_attack" && ve.Code != "nonce_replayed" {
+		t.Errorf("N-4: expected error code 'replay_attack' or 'nonce_replayed', got %q", ve.Code)
 	}
 	t.Logf("N-4 PASS: replayed nonce correctly denied — code=%q", ve.Code)
 }

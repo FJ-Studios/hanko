@@ -16,6 +16,9 @@ type StoreCloser interface {
 	GetCap(id string) (*protocol.CapabilityToken, error)
 	NonceUsed(nonce []byte) bool
 	RecordNonce(nonce []byte)
+	// TryRecordNonce atomically checks and records a nonce. Returns true on
+	// first insert (success), false on replay. See broker.Store.TryRecordNonce.
+	TryRecordNonce(nonce []byte) bool
 	RevocationList() *protocol.RevocationList
 	Revoke(entry protocol.RevocationEntry) error
 	// RecordNonceStrict returns (true,nil) on first insert, (false,nil) on duplicate.
