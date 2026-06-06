@@ -1,0 +1,52 @@
+[
+  {
+    "id": "N-1",
+    "fixture": "expired-cap",
+    "description": "A cap token whose expires_at is in the past MUST be rejected by hanko verify",
+    "expected_outcome": "DENIED",
+    "expected_exit_code": 3,
+    "expected_error": "capability_expired",
+    "test_function": "TestN1ExpiredCap",
+    "package": "tests/negative"
+  },
+  {
+    "id": "N-2",
+    "fixture": "tampered-attestation",
+    "description": "An attestation envelope whose signature does not match the canonical JSON body MUST be rejected",
+    "expected_outcome": "DENIED",
+    "expected_exit_code": 1,
+    "expected_error": "signature_invalid",
+    "test_function": "TestN2TamperedAttestation",
+    "package": "tests/negative"
+  },
+  {
+    "id": "N-3",
+    "fixture": "revoked-sigil",
+    "description": "An attestation whose root sigil appears in hanko_revocations MUST be rejected even if signature is valid",
+    "expected_outcome": "DENIED",
+    "expected_exit_code": 2,
+    "expected_error": "sigil_revoked",
+    "test_function": "TestN3RevokedSigil",
+    "package": "tests/negative"
+  },
+  {
+    "id": "N-4",
+    "fixture": "replay-attack",
+    "description": "A cap token whose nonce has already been seen in the audit log MUST be rejected on second use",
+    "expected_outcome": "DENIED",
+    "expected_exit_code": 1,
+    "expected_error": "nonce_replayed",
+    "test_function": "TestN4ReplayAttack",
+    "package": "tests/negative"
+  },
+  {
+    "id": "N-5",
+    "fixture": "scope-mismatch",
+    "description": "A cap token presented for a scope the caller was never granted MUST be rejected",
+    "expected_outcome": "DENIED",
+    "expected_exit_code": 1,
+    "expected_error": "scope_mismatch",
+    "test_function": "TestN5ScopeMismatch",
+    "package": "tests/negative"
+  }
+]
