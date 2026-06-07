@@ -85,6 +85,7 @@ func (e *VerifyError) Error() string { return e.Code + ": " + e.Message }
 var (
 	ErrSignatureInvalid = &VerifyError{Code: "signature_invalid", Message: "attestation signature does not match canonical JSON body"}
 	ErrSigilRevoked     = &VerifyError{Code: "sigil_revoked", Message: "sigil has been revoked"}
+	ErrCapRevoked       = &VerifyError{Code: "cap_revoked", Message: "capability token has been revoked"}
 	ErrCapExpired       = &VerifyError{Code: "capability_expired", Message: "capability token is expired"}
 	// ErrNonceReplayed is kept for backwards compatibility; new code uses ErrReplayAttack.
 	ErrNonceReplayed = &VerifyError{Code: "nonce_replayed", Message: "capability token nonce has already been used"}
