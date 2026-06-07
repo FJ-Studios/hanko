@@ -112,7 +112,8 @@ func hexEncodeNonce(nonce []byte) string { return hex.EncodeToString(nonce) }
 // on every VerifyAttestation without caching.
 //
 // Postgres equivalent: SELECT 1 FROM hanko_revocations WHERE target_id = $1 LIMIT 1
-// with covering index idx_rev_target_covering (migration 003_revocation_indexes.sql).
+// with covering index idx_rev_target_covering on hanko_revocations(target_id)
+// (migration 003_revocation_indexes.sql — enables index-only scan, no heap fetch).
 func (m *MemStore) IsRevoked(id string) bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
