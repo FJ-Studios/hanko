@@ -136,8 +136,58 @@ b.RevokeSigil(sigil.ID, "key compromise", issuerSigilID)
 | W1 | Protocol spec + JSON wire format | done (spec file) |
 | W2 | **Go reference impl — this repo** | **done** |
 | W3 | Swift implementation (`gh:FJ-Studios/hanko-swift`) | planned |
-| W4 | Postgres schema + full broker CLI | planned |
-| W5 | e2e tests + negative fixtures (live Postgres) | planned |
+| W4 | **Postgres store + full broker CLI** | **done** |
+| W5 | HTTP/NATS listener + shi-secret:// DSN + Woodpecker CI Pg sidecar | planned |
+
+## W4 — Postgres store + broker CLI
+
+### Schema (migrations/001_initial.sql, auto-applied)
+
+| Table | Purpose |
+|---|---|
+| `sigils` | Stable identity assertions (id UUID PK, subject, public_key BYTEA, metadata JSONB) |
+| `capability_tokens` | Scoped grants (id UUID PK, sigil_id FK, scope, nonce BYTEA, expires_at) |
+| `attestation_envelopes` | Audit log of issued envelopes (payload JSONB) |
+| `revocation_entries` | Append-only revocation list (target_type CHECK sigil/cap/attestation) |
+| `consumed_nonces` | Replay protection — **BYTEA PRIMARY KEY** (F-4.4: first INSERT wins) |
+| `hanko_schema_migrations` | Applied migration versions |
+
+### CLI surface (W4)
+
+```
+hanko-broker issue sigil  --subject <id> --pubkey <hex> [--meta k=v ...]
+hanko-broker issue cap    --sigil <id> --scope <s> --ttl <dur>
+hanko-broker issue attestation --sigil <id> [--cap <id> ...] --ttl <dur>
+hanko-broker verify [<envelope.json>|-]
+hanko-broker revoke sigil|cap <id> [--reason <str>]
+hanko-broker list sigils
+hanko-broker --store mem|pg  (global flag; default pg when HANKO_PG_DSN set)
+```
+
+### Store selection
+
+```bash
+# Postgres (default when HANKO_PG_DSN is set)
+export HANKO_PG_DSN="postgres://user:pass@localhost/hanko?sslmode=disable"
+hanko-broker list sigils
+
+# In-memory (demo / CI without Postgres sidecar)
+hanko-broker --store mem issue sigil ...
+```
+
+### Nuc-dev deployment
+
+See [docs/nuc-dev-deployment.md](docs/nuc-dev-deployment.md).
+
+Broker key minted pre-W4 on nuc-dev:
+- Path: `~/.hanko/broker.key`
+- Fingerprint: `sha256:a99a5123...`
+
+### Replay-race guarantee (F-4.4)
+
+`consumed_nonces.nonce BYTEA PRIMARY KEY` + `INSERT ... ON CONFLICT DO NOTHING` ensures
+exactly one concurrent INSERT wins. The `TestNonceReplayRace` test (20 goroutines, same
+nonce) asserts exactly 1 winner against both MemStore and PgStore.
 
 ## License
 

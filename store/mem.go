@@ -68,15 +68,18 @@ func (m *MemStore) GetCap(id string) (*protocol.CapabilityToken, error) {
 func (m *MemStore) NonceUsed(nonce []byte) bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	_, used := m.nonces[hex.EncodeToString(nonce)]
+	_, used := m.nonces[hexEncodeNonce(nonce)]
 	return used
 }
 
 func (m *MemStore) RecordNonce(nonce []byte) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.nonces[hex.EncodeToString(nonce)] = struct{}{}
+	m.nonces[hexEncodeNonce(nonce)] = struct{}{}
 }
+
+// hexEncodeNonce is a package-internal helper shared by MemStore and MemStoreCloser.
+func hexEncodeNonce(nonce []byte) string { return hex.EncodeToString(nonce) }
 
 func (m *MemStore) RevocationList() *protocol.RevocationList {
 	m.mu.RLock()
