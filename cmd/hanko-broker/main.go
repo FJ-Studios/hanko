@@ -67,6 +67,8 @@ func main() {
 	case "list":
 		mustArgs(args, 2, "list requires a sub-command: sigils")
 		runList(args[1:], storeFlag)
+	case "serve":
+		runServe(args[1:], storeFlag)
 	case "help", "--help", "-h":
 		printUsage()
 	default:
@@ -414,6 +416,15 @@ Commands:
                Revoke a Sigil or CapabilityToken.
 
   list sigils  List all stored Sigils (JSON array).
+
+  serve        Run HTTP server (W2 Phase 1: JWKS + healthz).
+               Flags: --addr <host:port>  (default: 127.0.0.1:8788 — Tailscale-only)
+               Public routes (safe for Caddy reverse-proxy):
+                 GET /api/v1/jwks
+                 GET /.well-known/jwks.json
+                 GET /healthz
+               Admin routes (Phase 2; never proxy publicly):
+                 (none yet)
 
   keygen       Generate broker Ed25519 key pair (~/.hanko/broker.key).
   demo         Run in-process end-to-end demonstration (MemStore).
