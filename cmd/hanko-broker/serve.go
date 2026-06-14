@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -24,12 +25,26 @@ import (
 // the "listening" line for ops scripts to grep.
 func runServe(args []string, storeFlag string) {
 	addr := "127.0.0.1:8788"
+	oidcPolicy := os.Getenv("HANKO_OIDC_POLICY_PATH")
+	oidcAudit := os.Getenv("HANKO_OIDC_AUDIT_PATH")
+	oidcAudience := os.Getenv("HANKO_OIDC_AUDIENCE")
+	// IssuerJWKSURLs is a comma list "issuer=jwksURL,issuer=jwksURL" via
+	// HANKO_OIDC_ISSUERS env var. Empty → OIDC endpoint disabled.
+	oidcIssuers := os.Getenv("HANKO_OIDC_ISSUERS")
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--addr":
 			addr = nextArg(args, &i, "--addr")
+		case "--oidc-policy":
+			oidcPolicy = nextArg(args, &i, "--oidc-policy")
+		case "--oidc-audit":
+			oidcAudit = nextArg(args, &i, "--oidc-audit")
+		case "--oidc-audience":
+			oidcAudience = nextArg(args, &i, "--oidc-audience")
+		case "--oidc-issuers":
+			oidcIssuers = nextArg(args, &i, "--oidc-issuers")
 		default:
-			die("serve: unknown flag %q (want: --addr <host:port>)", args[i])
+			die("serve: unknown flag %q", args[i])
 		}
 	}
 
@@ -41,6 +56,33 @@ func runServe(args []string, storeFlag string) {
 	hs, err := broker.NewHTTPServer(b)
 	if err != nil {
 		die("serve: %v", err)
+	}
+
+	// Wire OIDC bootstrap iff issuer map is configured. No flag → only
+	// JWKS + healthz are exposed (Phase 1 behavior).
+	if oidcIssuers != "" {
+		issuerMap, err := parseIssuerMap(oidcIssuers)
+		if err != nil {
+			die("serve: --oidc-issuers: %v", err)
+		}
+		policy, err := broker.LoadOIDCPolicy(oidcPolicy)
+		if err != nil {
+			die("serve: load policy: %v", err)
+		}
+		oidc, err := broker.NewOIDCBootstrap(b, broker.OIDCConfig{
+			Policy:         policy,
+			IssuerJWKSURLs: issuerMap,
+			Audience:       oidcAudience,
+			AuditPath:      oidcAudit,
+		})
+		if err != nil {
+			die("serve: oidc bootstrap: %v", err)
+		}
+		if err := hs.AttachOIDC(oidc); err != nil {
+			die("serve: attach oidc: %v", err)
+		}
+		fmt.Fprintf(os.Stderr, "hanko-broker: OIDC bootstrap enabled (policy=%s rows=%d audience=%s)\n",
+			oidcPolicy, policy.Len(), oidcAudience)
 	}
 
 	srv := &http.Server{
@@ -74,4 +116,25 @@ func runServe(args []string, storeFlag string) {
 			die("serve: %v", err)
 		}
 	}
+}
+
+// parseIssuerMap parses the "k=v,k=v" form into a map. Trims spaces.
+// Returns an error when an entry has no '='.
+func parseIssuerMap(raw string) (map[string]string, error) {
+	out := map[string]string{}
+	for _, pair := range strings.Split(raw, ",") {
+		pair = strings.TrimSpace(pair)
+		if pair == "" {
+			continue
+		}
+		eq := strings.IndexByte(pair, '=')
+		if eq < 0 {
+			return nil, fmt.Errorf("issuer pair %q: expected issuer=url", pair)
+		}
+		out[strings.TrimSpace(pair[:eq])] = strings.TrimSpace(pair[eq+1:])
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("no valid issuer=url pairs")
+	}
+	return out, nil
 }

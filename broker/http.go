@@ -69,6 +69,20 @@ func NewHTTPServer(broker *Broker) (*HTTPServer, error) {
 	return s, nil
 }
 
+// AttachOIDC registers the POST /api/v1/sigils/bootstrap-oidc handler
+// on the existing mux. Returns an error if oidc is nil.
+//
+// Operator topology MUST proxy this endpoint via Caddy public ingress
+// (it's safe to expose; trust anchors on IdP signature) and MUST NOT
+// expose any admin endpoint on the same listener — see W2 spec.
+func (s *HTTPServer) AttachOIDC(oidc *OIDCBootstrap) error {
+	if oidc == nil {
+		return fmt.Errorf("hanko: AttachOIDC: oidc must not be nil")
+	}
+	s.mux.HandleFunc("/api/v1/sigils/bootstrap-oidc", oidc.Handle)
+	return nil
+}
+
 // Handler exposes the HTTP handler tree to the caller (e.g. http.Server
 // or a wrapping middleware chain). Returned handler is safe for
 // concurrent use.
@@ -98,13 +112,18 @@ type jwksDoc struct {
 	Keys []jwkOKPKey `json:"keys"`
 }
 
+// brokerKid returns the deterministic JWKS kid for `pub` —
+// base64url(sha256(pub)). Shared between the JWKS endpoint and the
+// oidc-mint JWT header so consumers can correlate them.
+func brokerKid(pub ed25519.PublicKey) string {
+	sum := sha256.Sum256(pub)
+	return base64.RawURLEncoding.EncodeToString(sum[:])
+}
+
 func (s *HTTPServer) buildJWKS() error {
 	pub := s.broker.signerPub
 
-	// kid = base64url(sha256(public_key_bytes)) — stable, deterministic,
-	// disclosed safely (it's a hash of a public value).
-	sum := sha256.Sum256(pub)
-	kid := base64.RawURLEncoding.EncodeToString(sum[:])
+	kid := brokerKid(pub)
 
 	key := jwkOKPKey{
 		Kty: "OKP",

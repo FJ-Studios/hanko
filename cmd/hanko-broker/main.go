@@ -417,13 +417,21 @@ Commands:
 
   list sigils  List all stored Sigils (JSON array).
 
-  serve        Run HTTP server (W2 Phase 1: JWKS + healthz).
-               Flags: --addr <host:port>  (default: 127.0.0.1:8788 — Tailscale-only)
+  serve        Run HTTP server (W2 Phase 1 + 2).
+               Flags:
+                 --addr <host:port>         default 127.0.0.1:8788 (Tailscale-only)
+                 --oidc-policy <path>       JSON policy file (env: HANKO_OIDC_POLICY_PATH)
+                 --oidc-audit <path>        JSONL audit append-file (env: HANKO_OIDC_AUDIT_PATH)
+                 --oidc-audience <aud>      expected aud claim (env: HANKO_OIDC_AUDIENCE)
+                 --oidc-issuers <pairs>     "issuer=jwksURL,issuer=jwksURL"
+                                            (env: HANKO_OIDC_ISSUERS)
+                                            Empty → OIDC endpoint disabled.
                Public routes (safe for Caddy reverse-proxy):
-                 GET /api/v1/jwks
-                 GET /.well-known/jwks.json
-                 GET /healthz
-               Admin routes (Phase 2; never proxy publicly):
+                 GET  /api/v1/jwks
+                 GET  /.well-known/jwks.json
+                 GET  /healthz
+                 POST /api/v1/sigils/bootstrap-oidc  (when --oidc-issuers set)
+               Admin routes (never proxy publicly):
                  (none yet)
 
   keygen       Generate broker Ed25519 key pair (~/.hanko/broker.key).
