@@ -189,6 +189,55 @@ Broker key minted pre-W4 on nuc-dev:
 exactly one concurrent INSERT wins. The `TestNonceReplayRace` test (20 goroutines, same
 nonce) asserts exactly 1 winner against both MemStore and PgStore.
 
+## Add a new service to SSO
+
+Use this recipe to put a new service behind Hanko SSO. Today, the broker
+itself ships and a Swift consumer middleware is proven via sigma-analytics —
+other-language middlewares are tracked as TODO below.
+
+```
+1. Bring up the broker (docker compose template — see docs/nuc-dev-deployment.md).
+
+2. Issue a service Sigil:
+       hanko-broker issue sigil --subject "service:<app>@<your-org>" \
+                                --pubkey <hex>
+
+3. Pick or port the middleware shape for your service language:
+   • Vapor / Swift     → use HankoAuthMiddleware shape from
+                         gh:FJ-Studios/sigma-analytics (reference Swift impl)
+   • Laravel / PHP     → TODO (Hanko-PHP middleware not yet built)
+   • Go                → TODO (Hanko-Go middleware module not yet built;
+                         broker itself is Go so protocol type reuse is easy)
+   • Rust              → TODO (Hanko-Rust crate not yet built)
+   • Node / Express    → TODO (Hanko-JS package not yet built)
+
+   Each middleware must implement the 4-exit-code contract:
+       200  request authorized
+       401  no/invalid token
+       403  authenticated but cap-token doesn't grant requested scope
+       503  broker unreachable — middleware MAY fall back to a parallel
+            legacy Bearer path during a migration window (sigma ran 30 days)
+
+4. Configure your service's OIDC/OAuth provider slot at the broker
+   (POST /api/v1/sigils/bootstrap-oidc — gated behind the public-ingress
+   Caddy route on hanko-staging.obyw.one).
+
+5. Define your service's role matrix and implement a RoleEnforcer hook in
+   your middleware. Hanko's broker is intentionally role-agnostic;
+   semantics live in the consumer.
+
+6. Wire your invite flow to POST /api/v1/sigils/sub on the broker so new
+   users get a Sigil minted as part of the existing user-creation path.
+```
+
+**Honest state today:** only Swift has a working middleware port (sigma).
+PHP / Go / Rust / JS middleware modules need to be built before this recipe
+is real for those stacks. Pull requests welcome — file under
+`gh:FJ-Studios/hanko-<lang>` once a maintainer for that language steps up.
+
+For the OSS vs private layer matrix (so you know what to build vs adopt
+upstream), see [docs/open-source-vs-private.md](docs/open-source-vs-private.md).
+
 ## License
 
 AGPL-3.0 — see [LICENSE](LICENSE).
