@@ -12,6 +12,7 @@ import (
 	"time"
 
 	hcrypto "github.com/FJ-Studios/hanko/crypto"
+	"github.com/FJ-Studios/hanko/internal/observability"
 	"github.com/FJ-Studios/hanko/protocol"
 	"github.com/google/uuid"
 )
@@ -41,12 +42,33 @@ type Broker struct {
 	store      Store
 	signerPriv ed25519.PrivateKey
 	signerPub  ed25519.PublicKey
+	// pub is the NATS observability publisher. It is always non-nil —
+	// when NATS is unconfigured, a NoopPublisher is injected.
+	pub         observability.Publisher
+	workspaceID string
 }
 
 // New creates a Broker backed by the given Store. signerPriv is the issuer
 // private key used to sign AttestationEnvelopes.
+// NATS publishing is disabled (NoopPublisher) by default; call WithPublisher
+// to inject a live publisher.
 func New(store Store, signerPub ed25519.PublicKey, signerPriv ed25519.PrivateKey) *Broker {
-	return &Broker{store: store, signerPriv: signerPriv, signerPub: signerPub}
+	return &Broker{
+		store:      store,
+		signerPriv: signerPriv,
+		signerPub:  signerPub,
+		pub:        &observability.NoopPublisher{},
+	}
+}
+
+// WithPublisher injects a NATS publisher and workspaceID. Returns the same
+// *Broker for a fluent construction pattern:
+//
+//	b := broker.New(store, pub, priv).WithPublisher(natsPub, "shi-qa")
+func (b *Broker) WithPublisher(pub observability.Publisher, workspaceID string) *Broker {
+	b.pub = pub
+	b.workspaceID = workspaceID
+	return b
 }
 
 // IssueSigil creates and persists a new Sigil.
@@ -65,6 +87,20 @@ func (b *Broker) IssueSigil(subject string, pubKey ed25519.PublicKey, expiresAt 
 	if err := b.store.SaveSigil(s); err != nil {
 		return nil, fmt.Errorf("broker.IssueSigil: %w", err)
 	}
+
+	// W6.11.4 — emit sigil.issued event.
+	corrID := uuid.New().String()
+	b.pub.Publish(
+		observability.SigilSubject(b.workspaceID, observability.ActionSigilIssued, corrID),
+		observability.SigilIssuedEvent{
+			TS:          time.Now().UTC().Format(time.RFC3339Nano),
+			CorrID:      corrID,
+			WorkspaceID: b.workspaceID,
+			SubjectID:   subject,
+			ExpiresAt:   expiresAt,
+			Outcome:     "success",
+		},
+	)
 	return s, nil
 }
 
@@ -184,7 +220,24 @@ func (b *Broker) RevokeSigil(sigilID, reason, revokedBy string) error {
 	}
 	// Re-use the target sigil's UUID as the entry ID for direct lookup.
 	entry.ID = sigilID
-	return b.store.Revoke(entry)
+	if err := b.store.Revoke(entry); err != nil {
+		return err
+	}
+
+	// W6.11.4 — emit sigil.revoked event.
+	corrID := uuid.New().String()
+	b.pub.Publish(
+		observability.SigilSubject(b.workspaceID, observability.ActionSigilRevoked, corrID),
+		observability.SigilRevokedEvent{
+			TS:          time.Now().UTC().Format(time.RFC3339Nano),
+			CorrID:      corrID,
+			WorkspaceID: b.workspaceID,
+			SubjectID:   sigilID,
+			Reason:      reason,
+			Outcome:     "success",
+		},
+	)
+	return nil
 }
 
 // envelopeBody converts an AttestationEnvelope to a map[string]any without
