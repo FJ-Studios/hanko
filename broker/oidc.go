@@ -37,8 +37,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/FJ-Studios/hanko/internal/observability"
 	"github.com/FJ-Studios/hanko/protocol"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
 )
 
 // MaxOIDCTTL is the hard ceiling on every minted cap-token TTL. No policy
@@ -216,6 +218,10 @@ type OIDCConfig struct {
 	HTTPClient     *http.Client
 	JWKSCacheTTL   time.Duration
 	Now            func() time.Time
+	// Publisher is the NATS publisher for W6.11 lifecycle events.
+	// If nil, a NoopPublisher is used (backwards-compatible).
+	Publisher   observability.Publisher
+	WorkspaceID string
 }
 
 // OIDCBootstrap is the wire-level handler for bootstrap-oidc.
@@ -224,6 +230,9 @@ type OIDCBootstrap struct {
 	cfg    OIDCConfig
 	cache  *idpJWKSCache
 	auditm sync.Mutex
+	// W6.11 observability.
+	pub            observability.Publisher
+	bruteForce     *observability.BruteForceDetector
 }
 
 // NewOIDCBootstrap wires broker + config + JWKS cache.
@@ -246,10 +255,16 @@ func NewOIDCBootstrap(b *Broker, cfg OIDCConfig) (*OIDCBootstrap, error) {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
+	pub := cfg.Publisher
+	if pub == nil {
+		pub = &observability.NoopPublisher{}
+	}
 	return &OIDCBootstrap{
-		broker: b,
-		cfg:    cfg,
-		cache:  newIDPJWKSCache(cfg.HTTPClient, cfg.JWKSCacheTTL),
+		broker:     b,
+		cfg:        cfg,
+		cache:      newIDPJWKSCache(cfg.HTTPClient, cfg.JWKSCacheTTL),
+		pub:        pub,
+		bruteForce: observability.NewBruteForceDetector(pub, cfg.WorkspaceID),
 	}, nil
 }
 
@@ -277,7 +292,11 @@ type errResponse struct {
 }
 
 // Handle is the http.HandlerFunc for POST /api/v1/sigils/bootstrap-oidc.
+// W6.11.3: corr_id is read from X-Shikki-Corr-Id (NF-4); generated if absent.
+// All outcomes publish NATS lifecycle events via h.pub.
 func (h *OIDCBootstrap) Handle(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", "POST")
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -285,18 +304,56 @@ func (h *OIDCBootstrap) Handle(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 
+	// W6.11.3 NF-4: corr_id propagation.
+	corrID := r.Header.Get("X-Shikki-Corr-Id")
+	if corrID == "" {
+		corrID = uuid.New().String()
+	}
+	w.Header().Set("X-Shikki-Corr-Id", corrID)
+
+	// W6.11.3: emit auth_request on every bootstrap attempt.
+	h.pub.Publish(
+		observability.OIDCSubject(h.cfg.WorkspaceID, observability.ActionAuthRequest, corrID),
+		observability.OIDCEvent{
+			TS:          time.Now().UTC().Format(time.RFC3339Nano),
+			CorrID:      corrID,
+			WorkspaceID: h.cfg.WorkspaceID,
+			Endpoint:    "/api/v1/sigils/bootstrap-oidc",
+			Outcome:     "pending",
+		},
+	)
+
+	publishFail := func(clientID, reason string) {
+		h.pub.Publish(
+			observability.OIDCSubject(h.cfg.WorkspaceID, observability.ActionFailed, corrID),
+			observability.OIDCEvent{
+				TS:            time.Now().UTC().Format(time.RFC3339Nano),
+				CorrID:        corrID,
+				WorkspaceID:   h.cfg.WorkspaceID,
+				ClientID:      clientID,
+				Endpoint:      "/api/v1/sigils/bootstrap-oidc",
+				DurationMS:    time.Since(start).Milliseconds(),
+				Outcome:       "failure",
+				FailureReason: reason,
+			},
+		)
+	}
+
 	var req BootstrapRequest
 	dec := json.NewDecoder(io.LimitReader(r.Body, 64<<10))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&req); err != nil {
+		publishFail("", "invalid_request")
 		writeOIDCErr(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
 	if req.OIDCToken == "" || req.OIDCIssuer == "" || req.Audience == "" {
+		publishFail("", "missing_required_fields")
 		writeOIDCErr(w, http.StatusBadRequest, "invalid_request", "oidc_token, oidc_issuer, audience required")
 		return
 	}
 	if h.cfg.Audience != "" && req.Audience != h.cfg.Audience {
+		publishFail("", "audience_mismatch")
 		writeOIDCErr(w, http.StatusUnauthorized, "audience_mismatch", "configured audience mismatch")
 		return
 	}
@@ -306,18 +363,23 @@ func (h *OIDCBootstrap) Handle(w http.ResponseWriter, r *http.Request) {
 		requestedScopes = append(requestedScopes, req.RequestedScope)
 	}
 	if len(requestedScopes) == 0 {
+		publishFail("", "no_scopes_requested")
 		writeOIDCErr(w, http.StatusBadRequest, "invalid_request", "requested_scope or requested_scopes required")
 		return
 	}
 
 	jwksURL, ok := h.cfg.IssuerJWKSURLs[req.OIDCIssuer]
 	if !ok {
+		publishFail("", "unknown_issuer")
 		writeOIDCErr(w, http.StatusUnauthorized, "unknown_issuer", "issuer not configured")
 		return
 	}
 
 	claims, err := h.verifyJWT(r.Context(), req.OIDCToken, jwksURL, req.OIDCIssuer, req.Audience)
 	if err != nil {
+		publishFail("", "invalid_token")
+		// W6.11.4: brute-force tracking on token failures.
+		h.bruteForce.RecordFailure(req.OIDCIssuer)
 		writeOIDCErr(w, http.StatusUnauthorized, "invalid_token", err.Error())
 		return
 	}
@@ -325,6 +387,7 @@ func (h *OIDCBootstrap) Handle(w http.ResponseWriter, r *http.Request) {
 	row, ok := h.cfg.Policy.Lookup(req.OIDCIssuer, claims.Subject)
 	if !ok || !row.Enabled {
 		h.audit(req, claims.Subject, "no_policy", "")
+		publishFail(row.MappedSigil, "no_policy")
 		writeOIDCErr(w, http.StatusForbidden, "no_policy",
 			fmt.Sprintf("no enabled policy for sub=%s on issuer=%s", claims.Subject, req.OIDCIssuer))
 		return
@@ -332,6 +395,7 @@ func (h *OIDCBootstrap) Handle(w http.ResponseWriter, r *http.Request) {
 
 	if !scopesSubset(requestedScopes, row.AllowedScopes) {
 		h.audit(req, claims.Subject, "policy_denied", strings.Join(requestedScopes, " "))
+		publishFail(row.MappedSigil, "policy_denied")
 		writeOIDCErr(w, http.StatusForbidden, "policy_denied",
 			fmt.Sprintf("requested scopes exceed policy: requested=%v allowed=%v", requestedScopes, row.AllowedScopes))
 		return
@@ -354,17 +418,51 @@ func (h *OIDCBootstrap) Handle(w http.ResponseWriter, r *http.Request) {
 	expiresAt := h.cfg.Now().Add(ttl)
 	capTok, err := h.broker.IssueCap(row.MappedSigil, scopeJoined, expiresAt)
 	if err != nil {
+		publishFail(row.MappedSigil, "mint_failed")
 		writeOIDCErr(w, http.StatusInternalServerError, "mint_failed", err.Error())
 		return
 	}
 
+	// W6.11.3: emit token_issued on successful cap mint.
+	h.pub.Publish(
+		observability.OIDCSubject(h.cfg.WorkspaceID, observability.ActionTokenIssued, corrID),
+		observability.OIDCEvent{
+			TS:          time.Now().UTC().Format(time.RFC3339Nano),
+			CorrID:      corrID,
+			WorkspaceID: h.cfg.WorkspaceID,
+			ClientID:    row.MappedSigil,
+			SubjectID:   claims.Subject,
+			Scopes:      requestedScopes,
+			Endpoint:    "/api/v1/sigils/bootstrap-oidc",
+			DurationMS:  time.Since(start).Milliseconds(),
+			Outcome:     "success",
+		},
+	)
+
 	jws, err := h.signCapJWT(capTok, row, scopeJoined, expiresAt)
 	if err != nil {
+		publishFail(row.MappedSigil, "sign_failed")
 		writeOIDCErr(w, http.StatusInternalServerError, "sign_failed", err.Error())
 		return
 	}
 
 	h.audit(req, claims.Subject, "granted", scopeJoined)
+
+	// W6.11.3: emit code_issued (signed cap JWT delivered).
+	h.pub.Publish(
+		observability.OIDCSubject(h.cfg.WorkspaceID, observability.ActionCodeIssued, corrID),
+		observability.OIDCEvent{
+			TS:          time.Now().UTC().Format(time.RFC3339Nano),
+			CorrID:      corrID,
+			WorkspaceID: h.cfg.WorkspaceID,
+			ClientID:    row.MappedSigil,
+			SubjectID:   claims.Subject,
+			Scopes:      requestedScopes,
+			Endpoint:    "/api/v1/sigils/bootstrap-oidc",
+			DurationMS:  time.Since(start).Milliseconds(),
+			Outcome:     "success",
+		},
+	)
 
 	_ = json.NewEncoder(w).Encode(BootstrapResponse{
 		CapToken:     jws,

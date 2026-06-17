@@ -18,11 +18,15 @@ import (
 	"time"
 
 	"github.com/FJ-Studios/hanko/broker"
+	"github.com/FJ-Studios/hanko/internal/observability"
 )
 
 // runServe wires the broker behind broker.HTTPServer and runs http.Server
 // until SIGINT / SIGTERM. Logs are stderr; bind addr is stdout-ish via
 // the "listening" line for ops scripts to grep.
+//
+// W6.11: reads SHIKKI_NATS_URL + SHIKKI_WORKSPACE_ID to wire the NATS
+// publisher. If unset, a NoopPublisher is used and broker works standalone.
 func runServe(args []string, storeFlag string) {
 	addr := "127.0.0.1:8788"
 	oidcPolicy := os.Getenv("HANKO_OIDC_POLICY_PATH")
@@ -31,6 +35,13 @@ func runServe(args []string, storeFlag string) {
 	// IssuerJWKSURLs is a comma list "issuer=jwksURL,issuer=jwksURL" via
 	// HANKO_OIDC_ISSUERS env var. Empty → OIDC endpoint disabled.
 	oidcIssuers := os.Getenv("HANKO_OIDC_ISSUERS")
+	// W6.11 NATS env vars.
+	natsURL := os.Getenv("SHIKKI_NATS_URL")
+	if natsURL == "" {
+		natsURL = "nats://localhost:4222"
+	}
+	workspaceID := os.Getenv("SHIKKI_WORKSPACE_ID")
+
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--addr":
@@ -51,8 +62,16 @@ func runServe(args []string, storeFlag string) {
 	sc := openStore(storeFlag)
 	defer sc.Close()
 
+	// W6.11.1: build NATS publisher (non-blocking; NoopPublisher if env unset).
+	natsPub := observability.NewPublisherFromEnv(natsURL, workspaceID)
+	defer natsPub.Close()
+	if workspaceID != "" {
+		fmt.Fprintf(os.Stderr, "hanko-broker: NATS publisher active (url=%s workspace=%s)\n",
+			natsURL, workspaceID)
+	}
+
 	pub, priv := loadBrokerKey()
-	b := broker.New(sc, pub, priv)
+	b := broker.New(sc, pub, priv).WithPublisher(natsPub, workspaceID)
 	hs, err := broker.NewHTTPServer(b)
 	if err != nil {
 		die("serve: %v", err)
@@ -74,6 +93,8 @@ func runServe(args []string, storeFlag string) {
 			IssuerJWKSURLs: issuerMap,
 			Audience:       oidcAudience,
 			AuditPath:      oidcAudit,
+			Publisher:      natsPub,
+			WorkspaceID:    workspaceID,
 		})
 		if err != nil {
 			die("serve: oidc bootstrap: %v", err)
