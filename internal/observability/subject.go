@@ -3,7 +3,7 @@
 //
 // Canonical grammar (W6.9 rev 2):
 //
-//	shikki.<workspaceID>.broker.hanko.<sub-domain>.<entity>.<correlation>
+//	shikki.<workspaceID>.broker.hanko.<entity>.<action>.<corr_id>
 //
 // AC-4 enforcement: callers MUST use NATSSubject.String() — never
 // interpolate shikki.* subjects by hand. The nats_publisher_test.go T6

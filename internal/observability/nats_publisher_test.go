@@ -279,10 +279,23 @@ func TestT5_BruteForceDetection(t *testing.T) {
 		detector.RecordFailureAtForTest("calrs-hanko-bridge", now.Add(time.Duration(i)*time.Second))
 	}
 
-	// Give goroutine time to call Publish.
-	time.Sleep(100 * time.Millisecond)
-
-	msgs := cap.Messages()
+	// Poll for the goroutine-dispatched Publish (replaces fixed sleep to avoid
+	// flakiness under CPU pressure in CI).
+	deadline := time.Now().Add(2 * time.Second)
+	var msgs []captureMsg
+	for time.Now().Before(deadline) {
+		msgs = cap.Messages()
+		bruteCount := 0
+		for _, m := range msgs {
+			if strings.Contains(m.Subject, "brute_force_detected") {
+				bruteCount++
+			}
+		}
+		if bruteCount >= 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	bruteCount := 0
 	for _, m := range msgs {
 		if strings.Contains(m.Subject, "brute_force_detected") {
@@ -297,7 +310,9 @@ func TestT5_BruteForceDetection(t *testing.T) {
 	for i := 10; i < 15; i++ {
 		detector.RecordFailureAtForTest("calrs-hanko-bridge", now.Add(time.Duration(i)*time.Second))
 	}
-	time.Sleep(100 * time.Millisecond)
+	// Brief settle — these extra failures should not trigger a goroutine at all
+	// (dedup fires before the go-dispatch). 50ms is sufficient; no goroutine to await.
+	time.Sleep(50 * time.Millisecond)
 
 	msgs2 := cap.Messages()
 	bruteCount2 := 0
