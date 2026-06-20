@@ -96,4 +96,9 @@ var (
 	// guarantees at most one caller sees consumed=true for any given nonce.
 	ErrReplayAttack  = &VerifyError{Code: "replay_attack", Message: "nonce already consumed — concurrent or replayed attestation rejected"}
 	ErrScopeMismatch = &VerifyError{Code: "scope_mismatch", Message: "capability token scope does not cover the requested action"}
+	// ErrScopeUnknown is the NF-4 HARD-REJECT denial: the capability token
+	// claims a scope the consumer does not recognize. Consumers MUST reject
+	// (HTTP 403) and emit an unknown_scope_rejected audit event — they must
+	// NEVER silently accept an unknown scope.
+	ErrScopeUnknown = &VerifyError{Code: "unknown_scope_rejected", Message: "capability token scope is not recognized by this consumer"}
 )
