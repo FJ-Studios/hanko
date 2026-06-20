@@ -105,6 +105,24 @@ type ConfigReloadFailedEvent struct {
 	RollbackApplied bool     `json:"rollback_applied"`
 }
 
+// ScopeRejectedEvent is the NF-4 audit record emitted when a capability
+// token claims a scope the consumer does not recognize and the request is
+// HARD-REJECTED (HTTP 403). It feeds the hanko_audit log (NF-5).
+//
+// AC-5 enforcement: carries only non-sensitive identifiers — never the raw
+// token, nonce, or private key.
+type ScopeRejectedEvent struct {
+	TS              string `json:"ts"`               // RFC3339 UTC
+	CorrID          string `json:"corr_id"`          // uuid
+	WorkspaceID     string `json:"workspace_id"`     // e.g. "sigma"
+	Event           string `json:"event"`            // always "unknown_scope_rejected"
+	TokenID         string `json:"token_id"`         // CapabilityToken.ID
+	SigilID         string `json:"sigil_id"`         // bound Sigil UUID
+	Scope           string `json:"scope"`            // the rejected (unknown) scope
+	RequestedAction string `json:"requested_action"` // action the consumer was checking
+	Outcome         string `json:"outcome"`          // always "rejected"
+}
+
 // nowRFC3339 returns the current UTC time in RFC3339Nano format.
 func nowRFC3339() string {
 	return time.Now().UTC().Format(time.RFC3339Nano)
