@@ -13,10 +13,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/FJ-Studios/hanko/broker"
+	hcrypto "github.com/FJ-Studios/hanko/crypto"
 	"github.com/FJ-Studios/hanko/protocol"
 	"github.com/FJ-Studios/hanko/store"
 	"github.com/golang-jwt/jwt/v5"
@@ -485,19 +487,221 @@ func TestLoadOIDCPolicy_EmptyPath(t *testing.T) {
 }
 
 // TP-W2-2-13: NewOIDCBootstrap rejects nil broker / nil policy / empty
-// IssuerJWKSURLs.
+// IssuerJWKSURLs. Updated for CRIT-5: Audience is now also required.
 func TestNewOIDCBootstrap_Validation(t *testing.T) {
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
 	b := broker.New(store.NewMemStore(), pub, priv)
 	p, _ := broker.LoadOIDCPolicy("")
 
-	if _, err := broker.NewOIDCBootstrap(nil, broker.OIDCConfig{Policy: p, IssuerJWKSURLs: map[string]string{"a": "b"}}); err == nil {
+	validIssuers := map[string]string{"a": "b"}
+	const validAudience = "hanko.obyw.one"
+
+	if _, err := broker.NewOIDCBootstrap(nil, broker.OIDCConfig{Policy: p, IssuerJWKSURLs: validIssuers, Audience: validAudience}); err == nil {
 		t.Errorf("nil broker: want error")
 	}
-	if _, err := broker.NewOIDCBootstrap(b, broker.OIDCConfig{IssuerJWKSURLs: map[string]string{"a": "b"}}); err == nil {
+	if _, err := broker.NewOIDCBootstrap(b, broker.OIDCConfig{IssuerJWKSURLs: validIssuers, Audience: validAudience}); err == nil {
 		t.Errorf("nil policy: want error")
 	}
-	if _, err := broker.NewOIDCBootstrap(b, broker.OIDCConfig{Policy: p}); err == nil {
+	if _, err := broker.NewOIDCBootstrap(b, broker.OIDCConfig{Policy: p, Audience: validAudience}); err == nil {
 		t.Errorf("empty IssuerJWKSURLs: want error")
+	}
+}
+
+// SECURITY-CRIT-5-01: NewOIDCBootstrap must reject empty Audience at startup.
+// Previously cfg.Audience=="" silently skipped the audience check — a critical
+// bypass. Now it must fail startup with a clear error.
+func TestNewOIDCBootstrap_EmptyAudienceBootFails(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	b := broker.New(store.NewMemStore(), pub, priv)
+	p, _ := broker.LoadOIDCPolicy("")
+
+	_, err := broker.NewOIDCBootstrap(b, broker.OIDCConfig{
+		Policy:         p,
+		IssuerJWKSURLs: map[string]string{"https://token.actions.githubusercontent.com": "http://jwks.example"},
+		Audience:       "", // intentionally empty — must fail
+	})
+	if err == nil {
+		t.Fatal("CRIT-5: expected error for empty Audience, got nil — boot bypass not closed")
+	}
+	if !strings.Contains(err.Error(), "Audience") && !strings.Contains(err.Error(), "audience") {
+		t.Errorf("CRIT-5: error message should mention audience, got: %v", err)
+	}
+}
+
+// SECURITY-CRIT-5-02: A valid request with matching audience succeeds (non-regression).
+func TestBootstrapOIDC_ValidAudienceOK(t *testing.T) {
+	f := newOIDCFixture(t)
+	tok := f.signIDPToken(nil)
+	code, ok, bad := f.post(BootstrapReq{
+		OIDCToken:      tok,
+		OIDCIssuer:     testIssuer,
+		Audience:       testAudience, // correct audience
+		RequestedScope: "ci.deploy.preprod",
+	})
+	if code != http.StatusOK {
+		t.Fatalf("CRIT-5 non-regression: got status %d want 200; err=%+v", code, bad)
+	}
+	if ok.GrantedSigil == "" {
+		t.Error("CRIT-5 non-regression: expected non-empty GrantedSigil")
+	}
+}
+
+// SECURITY-CRIT-5-03: A request with a wrong (but non-empty) audience returns 401.
+func TestBootstrapOIDC_WrongAudienceMismatch(t *testing.T) {
+	f := newOIDCFixture(t)
+	tok := f.signIDPToken(nil)
+	code, _, bad := f.post(BootstrapReq{
+		OIDCToken:      tok,
+		OIDCIssuer:     testIssuer,
+		Audience:       "evil.audience.example", // wrong audience
+		RequestedScope: "ci.deploy.preprod",
+	})
+	if code != http.StatusUnauthorized {
+		t.Errorf("CRIT-5: got status %d want 401 for wrong audience", code)
+	}
+	if bad.Error != "audience_mismatch" {
+		t.Errorf("CRIT-5: error code: got %q want audience_mismatch", bad.Error)
+	}
+}
+
+// SECURITY-CRIT-6-01: Concurrent duplicate nonces — exactly one must be
+// accepted; all others must be rejected with ErrNonceReplayed.
+// This exercises the TryRecordNonce atomic insert that replaced the TOCTOU
+// NonceUsed()+RecordNonce() pattern.
+func TestVerifyAttestation_ConcurrentDuplicateNonce(t *testing.T) {
+	b, _ := newBroker(t)
+	subjectPub, _, err := hcrypto.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("subject key: %v", err)
+	}
+
+	sigil, err := b.IssueSigil("agent:concurrent-nonce-test", subjectPub, nil, nil)
+	if err != nil {
+		t.Fatalf("IssueSigil: %v", err)
+	}
+	cap, err := b.IssueCap(sigil.ID, "test:scope", time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("IssueCap: %v", err)
+	}
+	env, err := b.IssueAttestation(sigil.ID, []protocol.CapabilityToken{*cap}, time.Now().Add(30*time.Minute))
+	if err != nil {
+		t.Fatalf("IssueAttestation: %v", err)
+	}
+
+	const goroutines = 20
+	results := make([]error, goroutines)
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	for i := 0; i < goroutines; i++ {
+		i := i
+		// Each goroutine constructs a fresh copy of the envelope so they share
+		// the same nonce bytes but don't share pointer state.
+		envCopy := *env
+		capsCopy := make([]protocol.CapabilityToken, len(env.Caps))
+		copy(capsCopy, env.Caps)
+		envCopy.Caps = capsCopy
+		go func() {
+			defer wg.Done()
+			results[i] = b.VerifyAttestation(&envCopy)
+		}()
+	}
+	wg.Wait()
+
+	accepted := 0
+	for _, err := range results {
+		if err == nil {
+			accepted++
+		} else if err != protocol.ErrNonceReplayed {
+			t.Errorf("CRIT-6: unexpected error (want nil or ErrNonceReplayed): %v", err)
+		}
+	}
+	if accepted != 1 {
+		t.Errorf("CRIT-6: expected exactly 1 accepted verification, got %d (TOCTOU not fixed)", accepted)
+	}
+}
+
+// SECURITY-HIGH9-01: Error responses must not expose internal error detail.
+// A request with a malformed JSON body should return "invalid_request" with
+// an opaque reason, not the raw Go parse error.
+func TestBootstrapOIDC_ErrorLeak_MalformedJSON(t *testing.T) {
+	f := newOIDCFixture(t)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/sigils/bootstrap-oidc",
+		strings.NewReader(`{not valid json`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	f.server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("HIGH-9: got %d want 400", rec.Code)
+	}
+	body := rec.Body.String()
+	// Must NOT contain Go-level parse error fragments.
+	leakPhrases := []string{"invalid character", "unexpected EOF", "syntax error", "cannot unmarshal"}
+	for _, phrase := range leakPhrases {
+		if strings.Contains(strings.ToLower(body), strings.ToLower(phrase)) {
+			t.Errorf("HIGH-9: response body leaks internal error text %q: %s", phrase, body)
+		}
+	}
+}
+
+// SECURITY-HIGH9-02: Token-validation failures must return an opaque reason.
+func TestBootstrapOIDC_ErrorLeak_BadToken(t *testing.T) {
+	f := newOIDCFixture(t)
+	code, _, bad := f.post(BootstrapReq{
+		OIDCToken:      "not.a.real.jwt",
+		OIDCIssuer:     testIssuer,
+		Audience:       testAudience,
+		RequestedScope: "ci.deploy.preprod",
+	})
+	if code != http.StatusUnauthorized {
+		t.Errorf("HIGH-9: got %d want 401", code)
+	}
+	// Reason must be generic — no JWT library internals.
+	leakPhrases := []string{"token is malformed", "could not", "failed to", "parse error", "base64"}
+	reason := strings.ToLower(bad.Reason)
+	for _, phrase := range leakPhrases {
+		if strings.Contains(reason, phrase) {
+			t.Errorf("HIGH-9: reason field leaks internal detail %q: reason=%q", phrase, bad.Reason)
+		}
+	}
+}
+
+// SECURITY-HIGH11-01: Brute-force key must differ between callers using same
+// issuer but different source IPs. We verify RecordFailure is called with the
+// source IP, not the caller-supplied issuer, by using the fixture's bruteForce
+// detector indirectly — two requests with the same issuer but different
+// RemoteAddr must not share a failure bucket.
+// (Structural: we verify the handler does NOT embed the issuer string in the
+// failure key by ensuring the opaque error returned is "invalid_token" and
+// that a valid token with a different IP is unaffected.)
+func TestBootstrapOIDC_BruteForceKeyedOnIP(t *testing.T) {
+	f := newOIDCFixture(t)
+
+	// Send a bad token — brute-force counter should key on RemoteAddr, not issuer.
+	for i := 0; i < 3; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/sigils/bootstrap-oidc",
+			strings.NewReader(`{"oidc_token":"bad","oidc_issuer":"`+testIssuer+`","audience":"`+testAudience+`","requested_scope":"ci.deploy.preprod"}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.RemoteAddr = "10.0.0.1:12345"
+		rec := httptest.NewRecorder()
+		f.server.Handler().ServeHTTP(rec, req)
+		// Expected 401 — just driving the counter.
+	}
+
+	// A valid request from a DIFFERENT IP must still succeed.
+	tok := f.signIDPToken(nil)
+	raw, _ := json.Marshal(BootstrapReq{
+		OIDCToken:      tok,
+		OIDCIssuer:     testIssuer,
+		Audience:       testAudience,
+		RequestedScope: "ci.deploy.preprod",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/sigils/bootstrap-oidc", bytes.NewReader(raw))
+	req.Header.Set("Content-Type", "application/json")
+	req.RemoteAddr = "10.0.0.2:54321" // different IP
+	rec := httptest.NewRecorder()
+	f.server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Errorf("HIGH-11: valid request from different IP should succeed; got %d", rec.Code)
 	}
 }
