@@ -106,10 +106,13 @@ func runServe(args []string, storeFlag string) {
 			oidcPolicy, policy.Len(), oidcAudience)
 	}
 
+	// SECURITY(HIGH-10): ReadTimeout + WriteTimeout prevent Slowloris.
 	srv := &http.Server{
 		Addr:              addr,
 		Handler:           hs.Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      10 * time.Second,
 		IdleTimeout:       30 * time.Second,
 	}
 
