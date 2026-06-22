@@ -70,8 +70,58 @@ func runServe(args []string, storeFlag string) {
 			natsURL, workspaceID)
 	}
 
+	// W6.11.10: Prometheus /metrics exposition (parallel to NATS events).
+	// SHIKKI_METRICS_ADDR overrides the loopback default; "off" disables it.
+	metrics := observability.NewMetrics()
+	metricsAddr := os.Getenv("SHIKKI_METRICS_ADDR")
+	if metricsAddr == "" {
+		metricsAddr = observability.MetricsAddr
+	}
+	if metricsAddr != "off" {
+		if ms, err := metrics.ServeMetrics(metricsAddr); err != nil {
+			fmt.Fprintf(os.Stderr, "hanko-broker: metrics endpoint disabled (%v)\n", err)
+		} else {
+			defer ms.Close()
+			fmt.Fprintf(os.Stderr, "hanko-broker: /metrics serving on %s\n", ms.Addr())
+		}
+	}
+
+	// W6.11.9: config-reload subscriber (only with a live NATS connection).
+	if np, ok := natsPub.(*observability.NATSPublisher); ok && workspaceID != "" {
+		reloader := observability.NewConfigReloader(natsPub, workspaceID,
+			observability.ReloadableConfig{
+				BruteForceThreshold: observability.DefaultBruteForceThreshold,
+				BruteForceWindowSec: observability.DefaultBruteForceWindowSec,
+				LogLevel:            "info",
+				NATSWorkspaceID:     workspaceID,
+			}).WithMetrics(metrics)
+		if conn := np.NATSConn(); conn != nil {
+			if _, err := reloader.Subscribe(conn); err != nil {
+				fmt.Fprintf(os.Stderr, "hanko-broker: config-reload subscribe failed: %v\n", err)
+			} else {
+				fmt.Fprintln(os.Stderr, "hanko-broker: config-reload subscriber active")
+			}
+		}
+	}
+
+	// W6.11.8: Postgres CDC → NATS (only when a replication DSN is configured).
+	if dsn := os.Getenv("SHIKKI_CDC_DSN"); dsn != "" && workspaceID != "" {
+		publication := os.Getenv("SHIKKI_CDC_PUBLICATION")
+		if publication == "" {
+			publication = "hanko_audit_pub"
+		}
+		cdc := observability.NewCDCPublisher(natsPub, workspaceID, metrics)
+		go func() {
+			fmt.Fprintf(os.Stderr, "hanko-broker: CDC replication starting (slot=%s)\n",
+				observability.CDCSlotName)
+			if err := cdc.StartReplication(context.Background(), dsn, publication); err != nil {
+				fmt.Fprintf(os.Stderr, "hanko-broker: CDC replication stopped: %v\n", err)
+			}
+		}()
+	}
+
 	pub, priv := loadBrokerKey()
-	b := broker.New(sc, pub, priv).WithPublisher(natsPub, workspaceID)
+	b := broker.New(sc, pub, priv).WithPublisher(natsPub, workspaceID).WithMetrics(metrics)
 	hs, err := broker.NewHTTPServer(b)
 	if err != nil {
 		die("serve: %v", err)
