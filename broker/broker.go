@@ -31,6 +31,11 @@ type Store interface {
 	NonceUsed(nonce []byte) bool
 	// RecordNonce records a nonce as consumed (replay protection).
 	RecordNonce(nonce []byte)
+	// TryRecordNonce atomically inserts nonce. Returns true on first insert
+	// (nonce was fresh), false if nonce was already recorded (replay).
+	// Implementations MUST be safe for concurrent callers on the same nonce —
+	// exactly one concurrent caller receives true.
+	TryRecordNonce(nonce []byte) bool
 	// RevocationList returns the current pull-model revocation list.
 	RevocationList() *protocol.RevocationList
 	// Revoke records a revocation entry.
@@ -183,19 +188,20 @@ func (b *Broker) VerifyAttestation(env *protocol.AttestationEnvelope) error {
 		return protocol.ErrCapExpired
 	}
 
-	// 4+5. Per-cap checks.
+	// 4+5. Per-cap checks — expiry then atomic nonce insert.
+	// SECURITY(CRIT-6): The check-then-act TOCTOU is eliminated by using
+	// TryRecordNonce which atomically inserts and reports whether the nonce
+	// was fresh. A concurrent duplicate call on the same nonce gets false
+	// and is rejected before we return success to either caller.
+	// Recorded nonces are NOT rolled back on subsequent cap failure — the
+	// nonce is consumed once and that's correct: it prevents any replay.
 	for _, cap := range env.Caps {
 		if time.Now().After(cap.ExpiresAt) {
 			return protocol.ErrCapExpired
 		}
-		if b.store.NonceUsed(cap.Nonce) {
+		if !b.store.TryRecordNonce(cap.Nonce) {
 			return protocol.ErrNonceReplayed
 		}
-	}
-
-	// All checks passed — consume nonces.
-	for _, cap := range env.Caps {
-		b.store.RecordNonce(cap.Nonce)
 	}
 	return nil
 }

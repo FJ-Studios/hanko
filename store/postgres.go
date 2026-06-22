@@ -213,6 +213,23 @@ func (p *PgStore) NonceUsed(nonce []byte) bool {
 	return exists
 }
 
+// TryRecordNonce atomically inserts a nonce and returns true if it was fresh.
+// Uses INSERT ... ON CONFLICT DO NOTHING + RowsAffected to detect duplicates
+// in a single round-trip. SECURITY(CRIT-6): eliminates TOCTOU.
+func (p *PgStore) TryRecordNonce(nonce []byte) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	tag, err := p.pool.Exec(ctx,
+		`INSERT INTO consumed_nonces (nonce) VALUES ($1) ON CONFLICT DO NOTHING`,
+		nonce)
+	if err != nil {
+		// Conservative: treat DB error as replay to fail closed.
+		return false
+	}
+	return tag.RowsAffected() == 1
+}
+
 // RecordNonce records a nonce as consumed using INSERT ... ON CONFLICT DO NOTHING.
 // The BYTEA PRIMARY KEY is the authoritative gate — concurrent callers racing
 // on the same nonce are safe: exactly one INSERT wins, the rest are no-ops.

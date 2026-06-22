@@ -78,6 +78,20 @@ func (m *MemStore) RecordNonce(nonce []byte) {
 	m.nonces[hexEncodeNonce(nonce)] = struct{}{}
 }
 
+// TryRecordNonce atomically checks and records a nonce.
+// Returns true if the nonce was fresh (first insert); false if already seen.
+// SECURITY(CRIT-6): eliminates the NonceUsed→RecordNonce TOCTOU window.
+func (m *MemStore) TryRecordNonce(nonce []byte) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := hexEncodeNonce(nonce)
+	if _, used := m.nonces[key]; used {
+		return false
+	}
+	m.nonces[key] = struct{}{}
+	return true
+}
+
 // hexEncodeNonce is a package-internal helper shared by MemStore and MemStoreCloser.
 func hexEncodeNonce(nonce []byte) string { return hex.EncodeToString(nonce) }
 
