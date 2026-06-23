@@ -19,6 +19,9 @@ type StoreCloser interface {
 	// TryRecordNonce atomically checks and records a nonce. Returns true on
 	// first insert (success), false on replay. See broker.Store.TryRecordNonce.
 	TryRecordNonce(nonce []byte) bool
+	// IsRevoked returns true if the entity with the given ID has been revoked.
+	// O(1) contract — see broker.Store.IsRevoked for details.
+	IsRevoked(id string) bool
 	RevocationList() *protocol.RevocationList
 	Revoke(entry protocol.RevocationEntry) error
 	// RecordNonceStrict returns (true,nil) on first insert, (false,nil) on duplicate.

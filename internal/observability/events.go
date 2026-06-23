@@ -24,13 +24,13 @@ type OIDCEvent struct {
 
 // SigilIssuedEvent is emitted when IssueSigil completes successfully (W6.11.4).
 type SigilIssuedEvent struct {
-	TS          string    `json:"ts"`
-	CorrID      string    `json:"corr_id"`
-	WorkspaceID string    `json:"workspace_id"`
-	SubjectID   string    `json:"subject_id"`
-	CapabilitySet []string `json:"capability_set,omitempty"` // scope list from meta
-	ExpiresAt   *time.Time `json:"expires_at,omitempty"`
-	Outcome     string    `json:"outcome"`
+	TS            string     `json:"ts"`
+	CorrID        string     `json:"corr_id"`
+	WorkspaceID   string     `json:"workspace_id"`
+	SubjectID     string     `json:"subject_id"`
+	CapabilitySet []string   `json:"capability_set,omitempty"` // scope list from meta
+	ExpiresAt     *time.Time `json:"expires_at,omitempty"`
+	Outcome       string     `json:"outcome"`
 }
 
 // SigilRevokedEvent is emitted when RevokeSigil completes (W6.11.4).
@@ -64,6 +64,45 @@ type BruteForceEvent struct {
 	WindowSeconds int       `json:"window_seconds"`
 	FirstSeen     time.Time `json:"first_seen"`
 	LastSeen      time.Time `json:"last_seen"`
+}
+
+// CDCEvent is the canonical payload for Postgres CDC → NATS events (W6.11.8).
+//
+// AC-5 / NF-5 redaction: FieldsHashed maps column name → a SHA-256 hash of the
+// raw value. The raw row content is NEVER published — only hashes + structural
+// metadata (table, row id, op). DiffSummary/TombstoneReason are derived,
+// non-sensitive descriptors.
+type CDCEvent struct {
+	TS              string            `json:"ts"`
+	CorrID          string            `json:"corr_id"`
+	WorkspaceID     string            `json:"workspace_id"`
+	Table           string            `json:"table"`
+	RowID           string            `json:"row_id"`
+	Op              string            `json:"op"` // "insert" | "update" | "delete"
+	FieldsHashed    map[string]string `json:"fields_hashed,omitempty"`
+	DiffSummary     []string          `json:"diff_summary,omitempty"`     // changed column names (update)
+	TombstoneReason string            `json:"tombstone_reason,omitempty"` // delete
+}
+
+// ConfigReloadedEvent is emitted after a successful hot reload (W6.11.9).
+type ConfigReloadedEvent struct {
+	TS            string   `json:"ts"`
+	CorrID        string   `json:"corr_id"`
+	WorkspaceID   string   `json:"workspace_id"`
+	KeysApplied   []string `json:"keys_applied"`
+	DurationMS    int64    `json:"duration_ms"`
+	HankoKidInUse string   `json:"hanko_kid_in_use"`
+}
+
+// ConfigReloadFailedEvent is emitted when a reload is rejected (W6.11.9).
+// RollbackApplied is always true — the broker reverts to the last good config.
+type ConfigReloadFailedEvent struct {
+	TS              string   `json:"ts"`
+	CorrID          string   `json:"corr_id"`
+	WorkspaceID     string   `json:"workspace_id"`
+	KeysAttempted   []string `json:"keys_attempted"`
+	FailureReason   string   `json:"failure_reason"`
+	RollbackApplied bool     `json:"rollback_applied"`
 }
 
 // nowRFC3339 returns the current UTC time in RFC3339Nano format.
