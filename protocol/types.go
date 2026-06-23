@@ -86,6 +86,13 @@ var (
 	ErrSignatureInvalid = &VerifyError{Code: "signature_invalid", Message: "attestation signature does not match canonical JSON body"}
 	ErrSigilRevoked     = &VerifyError{Code: "sigil_revoked", Message: "sigil has been revoked"}
 	ErrCapExpired       = &VerifyError{Code: "capability_expired", Message: "capability token is expired"}
-	ErrNonceReplayed    = &VerifyError{Code: "nonce_replayed", Message: "capability token nonce has already been used"}
-	ErrScopeMismatch    = &VerifyError{Code: "scope_mismatch", Message: "capability token scope does not cover the requested action"}
+	// ErrNonceReplayed is kept for backwards compatibility; new code uses ErrReplayAttack.
+	ErrNonceReplayed = &VerifyError{Code: "nonce_replayed", Message: "capability token nonce has already been used"}
+	// ErrReplayAttack is returned by VerifyAttestation when a concurrent or
+	// repeated verify call presents a nonce that was already atomically consumed
+	// by a prior call (F-4.4). The distinction from ErrNonceReplayed is that
+	// ReplayAttack is explicitly race-proof: the atomic ConsumeNonce check
+	// guarantees at most one caller sees consumed=true for any given nonce.
+	ErrReplayAttack  = &VerifyError{Code: "replay_attack", Message: "nonce already consumed — concurrent or replayed attestation rejected"}
+	ErrScopeMismatch = &VerifyError{Code: "scope_mismatch", Message: "capability token scope does not cover the requested action"}
 )

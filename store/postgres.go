@@ -239,6 +239,19 @@ func (p *PgStore) RecordNonceStrict(ctx context.Context, nonce []byte) (bool, er
 	return tag.RowsAffected() == 1, nil
 }
 
+// TryRecordNonce atomically checks and records a nonce.
+// Returns true if this call was the first consumer (INSERT succeeded);
+// false if the nonce was already recorded (replay detected).
+//
+// SECURITY(CRIT-6/F-4.4): single round-trip, no TOCTOU window.
+// Delegates to RecordNonceStrict with a 2s timeout.
+func (p *PgStore) TryRecordNonce(nonce []byte) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	ok, _ := p.RecordNonceStrict(ctx, nonce)
+	return ok
+}
+
 // RevocationList returns all revocation entries as a protocol.RevocationList.
 func (p *PgStore) RevocationList() *protocol.RevocationList {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
