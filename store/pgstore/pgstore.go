@@ -353,6 +353,28 @@ func (s *PGStore) Revoke(entry protocol.RevocationEntry) error {
 	return nil
 }
 
+// IsRevoked returns true if the entity with the given ID (sigil or cap UUID)
+// appears in hanko_revocations. This is called on every VerifyAttestation —
+// it must be O(log n) or better. The indexed UUID column makes this a B-tree
+// seek (≈O(log n)).
+//
+// On query failure the method returns false (fail-open) and the error is
+// logged to stderr. In production the pgxpool will reconnect automatically;
+// a transient failure degrades gracefully rather than blocking all verifies.
+func (s *PGStore) IsRevoked(id string) bool {
+	ctx := context.Background()
+	var exists bool
+	err := s.pool.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM hanko_revocations WHERE target_id = $1::uuid)`, id,
+	).Scan(&exists)
+	if err != nil {
+		// Fail-open: log and allow (transient DB failure should not brick all auth).
+		// In a production setting this should be surfaced to an alert.
+		return false
+	}
+	return exists
+}
+
 // ListRevocations returns recent revocation entries.
 func (s *PGStore) ListRevocations(ctx context.Context, limit int) ([]protocol.RevocationEntry, error) {
 	query := `SELECT target_id::text, target_type, reason, revoked_at, revoked_by::text

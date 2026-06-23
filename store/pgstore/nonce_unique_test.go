@@ -46,9 +46,9 @@ func TestNonceUniqueConstraint(t *testing.T) {
 	pgURL := requirePGURL(t)
 	ctx := context.Background()
 
-	st, err := Open(ctx, pgURL)
+	st, err := New(ctx, pgURL)
 	if err != nil {
-		t.Fatalf("pgstore.Open: %v", err)
+		t.Fatalf("pgstore.New: %v", err)
 	}
 	defer st.Close()
 
@@ -76,9 +76,9 @@ func TestNonceConcurrentPG(t *testing.T) {
 	pgURL := requirePGURL(t)
 	ctx := context.Background()
 
-	st, err := Open(ctx, pgURL)
+	st, err := New(ctx, pgURL)
 	if err != nil {
-		t.Fatalf("pgstore.Open: %v", err)
+		t.Fatalf("pgstore.New: %v", err)
 	}
 	defer st.Close()
 
@@ -117,15 +117,25 @@ func TestNonceRetentionIndexExists(t *testing.T) {
 	pgURL := requirePGURL(t)
 	ctx := context.Background()
 
-	st, err := Open(ctx, pgURL)
+	st, err := New(ctx, pgURL)
 	if err != nil {
-		t.Fatalf("pgstore.Open: %v", err)
+		t.Fatalf("pgstore.New: %v", err)
 	}
 	defer st.Close()
 
-	exists, err := st.IndexExists(ctx, "idx_consumed_nonces_consumed_at")
-	if err != nil {
-		t.Fatalf("IndexExists: %v", err)
+	// Query pg_indexes directly via the pool to check whether the retention
+	// index exists. Using st.Pool() as PGStore.IndexExists() is not yet
+	// part of the public surface (tracked for addition in a future PR).
+	var exists bool
+	row := st.Pool().QueryRow(ctx,
+		`SELECT EXISTS (
+			SELECT 1 FROM pg_indexes
+			WHERE indexname = $1
+		)`,
+		"idx_consumed_nonces_consumed_at",
+	)
+	if err := row.Scan(&exists); err != nil {
+		t.Fatalf("pg_indexes query: %v", err)
 	}
 	if !exists {
 		t.Error("retention index idx_consumed_nonces_consumed_at not found — migration 002 may not have been applied")
