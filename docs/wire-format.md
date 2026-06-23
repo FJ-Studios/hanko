@@ -49,5 +49,34 @@ All AttestationEnvelopes must carry `"version": "hanko/v0.1"`.
 |------|---------|
 | 0    | Valid   |
 | 1    | Invalid (signature_invalid, nonce_replayed, scope_mismatch) |
-| 2    | Revoked (sigil_revoked) |
+| 2    | Revoked (sigil_revoked, cap_revoked) |
 | 3    | Expired (capability_expired) |
+
+## Revocation semantics (MANDATORY — v0.1 W4)
+
+Revocation is checked on **every** `VerifyAttestation` call. There is no
+caching and no TTL trust. The broker checks:
+
+1. `store.IsRevoked(sigilID)` — root sigil revocation (O(1) lookup).
+2. `store.IsRevoked(cap.ID)` for every cap in the envelope (O(1) lookup each).
+
+Both checks happen unconditionally regardless of token expiry or other state.
+
+**Rationale (operator directive 2026-06-07 / F-4.2):** A stub that only
+checks token expiry creates a 5-minute real-world exploit window — an attacker
+with a stolen token can continue using it until TTL expires. Real sovereignty
+requires the revocation state to take effect on the next verify call after
+`store.Revoke` commits.
+
+**Implementation requirements:**
+
+- `MemStore`: O(1) hash-map index (`revokedIDs map[string]struct{}`), protected
+  by the same `sync.RWMutex` as all other store state.
+- `PostgresStore` (W4): B-tree index on `hanko_revocations(id)`. The column
+  `id` stores the UUID of the revoked entity (sigil or cap), enabling a
+  single-column covering index for the `SELECT 1 FROM hanko_revocations WHERE id = $1 LIMIT 1`
+  hot path.
+
+**Metrics:** `hanko_verify_revocation_check_total{result=allowed|revoked}` is
+incremented on every verify call. Operators can monitor the real-world
+revocation rate via this counter.

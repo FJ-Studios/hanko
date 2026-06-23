@@ -276,6 +276,21 @@ func (p *PgStore) RevocationList() *protocol.RevocationList {
 	return rl
 }
 
+// IsRevoked returns true if the entity with the given ID appears in the
+// revocation_entries table. Uses a point-read (WHERE id = $1 LIMIT 1) backed
+// by the PRIMARY KEY — O(1) lookup. Called on every VerifyAttestation.
+func (p *PgStore) IsRevoked(id string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	var exists bool
+	err := p.pool.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM revocation_entries WHERE id = $1 LIMIT 1)`,
+		id,
+	).Scan(&exists)
+	return err == nil && exists
+}
+
 // Revoke appends a revocation entry.
 func (p *PgStore) Revoke(entry protocol.RevocationEntry) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

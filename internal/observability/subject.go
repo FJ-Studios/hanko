@@ -25,6 +25,8 @@ const (
 	EntitySigil    = "sigil"
 	EntityJWKS     = "jwks"
 	EntitySecurity = "security"
+	EntityCDC      = "cdc"    // W6.11.8 — Postgres CDC → NATS
+	EntityConfig   = "config" // W6.11.9 — hot config-reload lifecycle
 )
 
 // Action constants — closed set of valid event verbs per entity.
@@ -55,6 +57,21 @@ const (
 // Security entity:
 const (
 	ActionBruteForceDetected = "brute_force_detected"
+)
+
+// CDC entity (W6.11.8):
+const (
+	ActionAuditRowInserted = "audit_row_inserted"
+	ActionAuditRowUpdated  = "audit_row_updated"
+	ActionAuditRowDeleted  = "audit_row_deleted"
+)
+
+// Config entity (W6.11.9). reload_requested is SUBSCRIBED (inbound), the
+// others are PUBLISHED by the broker after applying / failing a reload.
+const (
+	ActionConfigReloadRequested = "reload_requested"
+	ActionConfigReloaded        = "reloaded"
+	ActionConfigReloadFailed    = "reload_failed"
 )
 
 // NATSSubject is the typed representation of a W6.9 canonical NATS subject.
@@ -120,6 +137,31 @@ func SecuritySubject(workspaceID, action, corrID string) NATSSubject {
 		Domain:      Domain,
 		SubDomain:   SubDomain,
 		Entity:      EntitySecurity,
+		Action:      action,
+		CorrID:      corrID,
+	}
+}
+
+// CDCSubject returns a NATSSubject for a Postgres CDC event (W6.11.8).
+func CDCSubject(workspaceID, action, corrID string) NATSSubject {
+	return NATSSubject{
+		WorkspaceID: workspaceID,
+		Domain:      Domain,
+		SubDomain:   SubDomain,
+		Entity:      EntityCDC,
+		Action:      action,
+		CorrID:      corrID,
+	}
+}
+
+// ConfigSubject returns a NATSSubject for a config-reload lifecycle event
+// (W6.11.9).
+func ConfigSubject(workspaceID, action, corrID string) NATSSubject {
+	return NATSSubject{
+		WorkspaceID: workspaceID,
+		Domain:      Domain,
+		SubDomain:   SubDomain,
+		Entity:      EntityConfig,
 		Action:      action,
 		CorrID:      corrID,
 	}
