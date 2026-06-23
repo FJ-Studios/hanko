@@ -240,6 +240,18 @@ func (b *Broker) RevokeSigil(sigilID, reason, revokedBy string) error {
 	return nil
 }
 
+// RevokeCap adds a revocation entry for a CapabilityToken.
+func (b *Broker) RevokeCap(entry protocol.RevocationEntry) error {
+	entry.TargetType = "cap"
+	entry.RevokedAt = time.Now().UTC()
+	return b.store.Revoke(entry)
+}
+
+// GetCap retrieves a CapabilityToken by ID from the store.
+func (b *Broker) GetCap(id string) (*protocol.CapabilityToken, error) {
+	return b.store.GetCap(id)
+}
+
 // envelopeBody converts an AttestationEnvelope to a map[string]any without
 // the "signature" key, ready for canonical JSON signing.
 func envelopeBody(env *protocol.AttestationEnvelope) (map[string]any, error) {
