@@ -255,6 +255,15 @@ func (p *NATSPublisher) DropCount() int64 {
 	return p.drops.Load()
 }
 
+// NATSConn returns the live *nats.Conn, or nil if not currently connected.
+// Used to wire SUBSCRIBE-side features (W6.11.9 config reload) that need the
+// raw connection — the Publisher interface itself stays publish-only.
+func (p *NATSPublisher) NATSConn() *nats.Conn {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.conn
+}
+
 // NoopPublisher is a Publisher stub used when SHIKKI_NATS_URL is unset.
 // All Publish calls are silently discarded — broker operates standalone.
 type NoopPublisher struct{}
