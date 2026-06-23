@@ -27,6 +27,9 @@ const (
 	EntitySecurity = "security"
 	EntityCDC      = "cdc"    // W6.11.8 — Postgres CDC → NATS
 	EntityConfig   = "config" // W6.11.9 — hot config-reload lifecycle
+	// EntityScope namespaces capability-scope authorization audit events
+	// (NF-4 unknown-scope hard reject).
+	EntityScope = "scope"
 )
 
 // Action constants — closed set of valid event verbs per entity.
@@ -72,6 +75,11 @@ const (
 	ActionConfigReloadRequested = "reload_requested"
 	ActionConfigReloaded        = "reloaded"
 	ActionConfigReloadFailed    = "reload_failed"
+)
+
+// Scope entity:
+const (
+	ActionUnknownScopeRejected = "unknown_scope_rejected"
 )
 
 // NATSSubject is the typed representation of a W6.9 canonical NATS subject.
@@ -162,6 +170,19 @@ func ConfigSubject(workspaceID, action, corrID string) NATSSubject {
 		Domain:      Domain,
 		SubDomain:   SubDomain,
 		Entity:      EntityConfig,
+		Action:      action,
+		CorrID:      corrID,
+	}
+}
+
+// ScopeSubject returns a NATSSubject for a capability-scope audit event
+// (NF-4 unknown-scope hard reject).
+func ScopeSubject(workspaceID, action, corrID string) NATSSubject {
+	return NATSSubject{
+		WorkspaceID: workspaceID,
+		Domain:      Domain,
+		SubDomain:   SubDomain,
+		Entity:      EntityScope,
 		Action:      action,
 		CorrID:      corrID,
 	}

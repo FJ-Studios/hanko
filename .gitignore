@@ -1,4 +1,5 @@
 
 # kagami / shikki local test artifacts
 .shikki/
+.kagami/
 .kagami/scopes.toml
