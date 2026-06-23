@@ -65,6 +65,7 @@ func NewHTTPServer(broker *Broker) (*HTTPServer, error) {
 	s.mux.HandleFunc("/healthz", s.handleHealthz)
 	s.mux.HandleFunc("/api/v1/jwks", s.handleJWKS)
 	s.mux.HandleFunc("/.well-known/jwks.json", s.handleJWKS)
+	s.mux.HandleFunc("/admin/revoke", s.handleAdminRevoke)
 
 	return s, nil
 }
