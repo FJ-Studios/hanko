@@ -194,11 +194,14 @@ func TestPGNonceReplay(t *testing.T) {
 	env2, _ := b.IssueAttestation(sigil.ID, []protocol.CapabilityToken{*cap}, time.Now().Add(time.Hour))
 	err := b.VerifyAttestation(env2)
 	if err == nil {
-		t.Fatal("expected nonce_replayed, got nil")
+		t.Fatal("expected replay_attack, got nil")
 	}
 	ve, ok := err.(*protocol.VerifyError)
-	if !ok || ve.Code != "nonce_replayed" {
-		t.Errorf("expected nonce_replayed, got %v", err)
+	// "replay_attack" is the canonical code since F-4.4 (ErrReplayAttack); the
+	// legacy "nonce_replayed" alias (ErrNonceReplayed) is kept for compat but
+	// the broker now always returns ErrReplayAttack via TryRecordNonce.
+	if !ok || (ve.Code != "replay_attack" && ve.Code != "nonce_replayed") {
+		t.Errorf("expected replay_attack (or nonce_replayed), got %v", err)
 	}
 	t.Logf("TestPGNonceReplay PASS")
 }
