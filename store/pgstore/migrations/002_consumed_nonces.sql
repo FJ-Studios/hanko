@@ -11,7 +11,6 @@
 
 CREATE TABLE IF NOT EXISTS consumed_nonces (
     nonce               BYTEA       PRIMARY KEY,
-    attestation_id      UUID        NOT NULL REFERENCES attestations(id),
     consumed_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
     verifier_session_id TEXT
 );

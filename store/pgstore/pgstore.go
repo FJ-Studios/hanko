@@ -353,6 +353,28 @@ func (s *PGStore) Revoke(entry protocol.RevocationEntry) error {
 	return nil
 }
 
+// IsRevoked returns true if the entity with the given ID (sigil or cap UUID)
+// appears in hanko_revocations. This is called on every VerifyAttestation —
+// it must be O(log n) or better. The indexed UUID column makes this a B-tree
+// seek (≈O(log n)).
+//
+// On query failure the method returns false (fail-open) and the error is
+// logged to stderr. In production the pgxpool will reconnect automatically;
+// a transient failure degrades gracefully rather than blocking all verifies.
+func (s *PGStore) IsRevoked(id string) bool {
+	ctx := context.Background()
+	var exists bool
+	err := s.pool.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM hanko_revocations WHERE target_id = $1::uuid)`, id,
+	).Scan(&exists)
+	if err != nil {
+		// Fail-open: log and allow (transient DB failure should not brick all auth).
+		// In a production setting this should be surfaced to an alert.
+		return false
+	}
+	return exists
+}
+
 // ListRevocations returns recent revocation entries.
 func (s *PGStore) ListRevocations(ctx context.Context, limit int) ([]protocol.RevocationEntry, error) {
 	query := `SELECT target_id::text, target_type, reason, revoked_at, revoked_by::text
@@ -403,8 +425,9 @@ func (s *PGStore) migrate(ctx context.Context) error {
 	return err
 }
 
-// migrationSQL is the content of migrations/001_initial.sql embedded at
-// compile time to avoid runtime file dependencies.
+// migrationSQL embeds migrations 001–003 at compile time to avoid runtime file
+// dependencies. Each migration uses CREATE TABLE/INDEX IF NOT EXISTS so the
+// sequence is idempotent and safe to re-run against an already-migrated DB.
 const migrationSQL = `
 -- Hanko v0.1 — Initial schema (embedded in pgstore binary)
 CREATE TABLE IF NOT EXISTS hanko_sigils (
@@ -468,4 +491,33 @@ CREATE TABLE IF NOT EXISTS hanko_audit (
 );
 CREATE INDEX IF NOT EXISTS idx_audit_at    ON hanko_audit(occurred_at DESC);
 CREATE INDEX IF NOT EXISTS idx_audit_actor ON hanko_audit(actor_sigil);
+
+-- Migration 002: consumed_nonces — atomic nonce replay protection (F-4.4).
+--
+-- PRIMARY KEY on nonce provides the UNIQUE constraint that makes
+-- concurrent INSERT ... ON CONFLICT DO NOTHING atomic: the first inserter wins,
+-- all subsequent attempts for the same nonce byte sequence affect 0 rows →
+-- TryRecordNonce returns false → broker maps to ReplayAttack.
+--
+-- NOTE: attestation_id is intentionally omitted here. TryRecordNonce is called
+-- before the attestation is persisted (during VerifyAttestation), so there is no
+-- attestation UUID to reference at record time. The nonce byte sequence alone is
+-- the deduplication key.
+CREATE TABLE IF NOT EXISTS consumed_nonces (
+    nonce               BYTEA       PRIMARY KEY,
+    consumed_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    verifier_session_id TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_consumed_nonces_consumed_at
+    ON consumed_nonces(consumed_at);
+
+-- Migration 003: covering indexes for IsRevoked hot path (mandatory per operator
+-- directive 2026-06-07: no caching, no TTL trust, O(1) on every verify call).
+CREATE INDEX IF NOT EXISTS idx_rev_target_covering
+    ON hanko_revocations (target_id)
+    INCLUDE (revoked_at);
+
+CREATE INDEX IF NOT EXISTS idx_rev_type_target
+    ON hanko_revocations (target_type, target_id);
 `

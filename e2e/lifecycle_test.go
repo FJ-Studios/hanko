@@ -223,7 +223,10 @@ func runSuiteWith(t *testing.T, label string, factory storeFactory) {
 			t.Fatalf("IssueAttestation 2: %v", err)
 		}
 		err = b.VerifyAttestation(env2)
-		assertVerifyError(t, "TC-05", err, "nonce_replayed")
+		// The broker uses ErrReplayAttack (code "replay_attack") for consumed nonces.
+		// ErrNonceReplayed (code "nonce_replayed") is an older alias kept for backward
+		// compat but is not the code returned by VerifyAttestation — see broker.go:302.
+		assertVerifyError(t, "TC-05", err, "replay_attack")
 		t.Logf("TC-05 PASS: replay attack correctly blocked (%s)", label)
 	})
 
