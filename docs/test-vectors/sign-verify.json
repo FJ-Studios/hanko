@@ -1,0 +1,18 @@
+[
+  {
+    "id": "SV-1",
+    "description": "AttestationEnvelope body — empty caps, deterministic seed",
+    "seed_hex": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+    "public_key_b64": "ebVWLo/mVPlAeLES6KmLp5AfhTrmlb7X4OORC60ElmQ=",
+    "canonical_body": "{\"caps\":[],\"expires_at\":\"2026-06-06T13:00:00Z\",\"issued_at\":\"2026-06-06T12:00:00Z\",\"issuer\":\"hanko-broker@obyw.one\",\"sigil_id\":\"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\",\"version\":\"hanko/v0.1\"}",
+    "signature_b64": "0e7Cax+ncXAfHUHqAOxUrdPlGstiW5b3HsAwQG8hlkRL/kImxHLqgfShg02JjnYaFiS/gyqf09ZGpo096JLVAg=="
+  },
+  {
+    "id": "SV-2",
+    "description": "CapabilityToken body — fixed fields, deterministic seed",
+    "seed_hex": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+    "public_key_b64": "ebVWLo/mVPlAeLES6KmLp5AfhTrmlb7X4OORC60ElmQ=",
+    "canonical_body": "{\"expires_at\":\"2026-06-06T13:00:00Z\",\"id\":\"bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb\",\"issued_at\":\"2026-06-06T12:00:00Z\",\"nonce\":\"AQIDBAUGBwgJCgsMDQ4PEA==\",\"scope\":\"shi-secrets:read:ops/db-url\",\"sigil_id\":\"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\"}",
+    "signature_b64": "tz2oZKIPlC8K8gcIDXnXs4C1TrqKDqAALW331SFbt/Ax2N2Ecr+40zr+W8b49FFg8wbK1G8IEX7cXnRSb9wtCg=="
+  }
+]
