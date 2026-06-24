@@ -1,0 +1,33 @@
+# Kagami test scopes for hanko-broker.
+# Migrated from scopes.yaml + new e2e ship-gate scope (Master Spec §1.4).
+
+[[scopes]]
+name = "hanko"
+description = "Hanko OIDC broker — W6.11 NATS observability scope"
+language = "go"
+package_path = "internal/observability/..."
+type_patterns = [
+  "HankoBrokerNATSPublishW6_11",
+]
+test_file_patterns = [
+  "internal/observability/*_test.go",
+]
+expected_test_min = 7
+tags = ["go", "nats", "observability"]
+
+[[scopes]]
+name = "e2e-hanko-broker-no-vault"
+description = "End-to-end ship-gate scenarios for Hanko OIDC broker without live vault — includes PR #16 regression guard"
+language = "go"
+package_path = "."
+type_patterns = [
+  "UnknownScopeHardReject",
+  "JWKRotation",
+  "OIDCDiscoveryDoc",
+]
+test_file_patterns = [
+  "e2e/beta/unknown_scope_hard_reject_test.go",
+  "e2e/beta/jwk_rotation_test.go",
+  "e2e/beta/oidc_discovery_doc_test.go",
+]
+tags = ["e2e", "beta-cluster", "shi-secrets-hanko-beta"]
