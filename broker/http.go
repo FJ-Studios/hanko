@@ -22,7 +22,9 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
+	"os"
 	"time"
 )
 
@@ -41,6 +43,12 @@ type HTTPServer struct {
 	// process lifetime (today), so caching at boot is correct.
 	jwksDocument []byte
 	jwksKid      string
+
+	// adminSecret is the shared secret for admin endpoints, read from
+	// HANKO_ADMIN_SECRET at server construction. Empty means the env var
+	// was not set; the requireAdminSecret middleware will still wrap every
+	// admin handler and return 401 for every request (fail-closed).
+	adminSecret []byte
 }
 
 // NewHTTPServer builds the HTTP handler tree backed by `broker`.
@@ -56,7 +64,12 @@ func NewHTTPServer(broker *Broker) (*HTTPServer, error) {
 		)
 	}
 
-	s := &HTTPServer{broker: broker, mux: http.NewServeMux()}
+	adminSecret := []byte(os.Getenv("HANKO_ADMIN_SECRET"))
+	if len(adminSecret) == 0 {
+		log.Println("WARN hanko: HANKO_ADMIN_SECRET is not set — POST /admin/revoke will return 401 for every request (fail-closed)")
+	}
+
+	s := &HTTPServer{broker: broker, mux: http.NewServeMux(), adminSecret: adminSecret}
 
 	if err := s.buildJWKS(); err != nil {
 		return nil, fmt.Errorf("hanko: NewHTTPServer: build jwks: %w", err)
@@ -65,7 +78,7 @@ func NewHTTPServer(broker *Broker) (*HTTPServer, error) {
 	s.mux.HandleFunc("/healthz", s.handleHealthz)
 	s.mux.HandleFunc("/api/v1/jwks", s.handleJWKS)
 	s.mux.HandleFunc("/.well-known/jwks.json", s.handleJWKS)
-	s.mux.HandleFunc("/admin/revoke", s.handleAdminRevoke)
+	s.mux.HandleFunc("/admin/revoke", s.requireAdminSecret(s.handleAdminRevoke))
 
 	return s, nil
 }
