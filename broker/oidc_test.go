@@ -485,19 +485,142 @@ func TestLoadOIDCPolicy_EmptyPath(t *testing.T) {
 }
 
 // TP-W2-2-13: NewOIDCBootstrap rejects nil broker / nil policy / empty
-// IssuerJWKSURLs.
+// IssuerJWKSURLs. Updated for CRIT-5: Audience is now also required.
 func TestNewOIDCBootstrap_Validation(t *testing.T) {
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
 	b := broker.New(store.NewMemStore(), pub, priv)
 	p, _ := broker.LoadOIDCPolicy("")
 
-	if _, err := broker.NewOIDCBootstrap(nil, broker.OIDCConfig{Policy: p, IssuerJWKSURLs: map[string]string{"a": "b"}}); err == nil {
+	validIssuers := map[string]string{"a": "b"}
+	const validAudience = "hanko.obyw.one"
+
+	if _, err := broker.NewOIDCBootstrap(nil, broker.OIDCConfig{Policy: p, IssuerJWKSURLs: validIssuers, Audience: validAudience}); err == nil {
 		t.Errorf("nil broker: want error")
 	}
-	if _, err := broker.NewOIDCBootstrap(b, broker.OIDCConfig{IssuerJWKSURLs: map[string]string{"a": "b"}}); err == nil {
+	if _, err := broker.NewOIDCBootstrap(b, broker.OIDCConfig{IssuerJWKSURLs: validIssuers, Audience: validAudience}); err == nil {
 		t.Errorf("nil policy: want error")
 	}
-	if _, err := broker.NewOIDCBootstrap(b, broker.OIDCConfig{Policy: p}); err == nil {
+	if _, err := broker.NewOIDCBootstrap(b, broker.OIDCConfig{Policy: p, Audience: validAudience}); err == nil {
 		t.Errorf("empty IssuerJWKSURLs: want error")
+	}
+}
+
+// SECURITY-CRIT-5-01: NewOIDCBootstrap must reject empty Audience at startup.
+// Previously cfg.Audience=="" silently skipped the audience check — a critical
+// bypass. Now it must fail startup with a clear error.
+func TestNewOIDCBootstrap_EmptyAudienceBootFails(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	b := broker.New(store.NewMemStore(), pub, priv)
+	p, _ := broker.LoadOIDCPolicy("")
+
+	_, err := broker.NewOIDCBootstrap(b, broker.OIDCConfig{
+		Policy:         p,
+		IssuerJWKSURLs: map[string]string{"https://token.actions.githubusercontent.com": "http://jwks.example"},
+		Audience:       "", // intentionally empty — must fail
+	})
+	if err == nil {
+		t.Fatal("CRIT-5: expected error for empty Audience, got nil — boot bypass not closed")
+	}
+	if !strings.Contains(err.Error(), "Audience") && !strings.Contains(err.Error(), "audience") {
+		t.Errorf("CRIT-5: error message should mention audience, got: %v", err)
+	}
+}
+
+// SECURITY-CRIT-5-03: A request with a wrong (but non-empty) audience returns
+// 401 audience_mismatch. This guards the unconditional check added by CRIT-5b.
+func TestBootstrapOIDC_WrongAudienceMismatch(t *testing.T) {
+	f := newOIDCFixture(t)
+	tok := f.signIDPToken(nil)
+	code, _, bad := f.post(BootstrapReq{
+		OIDCToken:      tok,
+		OIDCIssuer:     testIssuer,
+		Audience:       "evil.audience.example", // wrong audience
+		RequestedScope: "ci.deploy.preprod",
+	})
+	if code != http.StatusUnauthorized {
+		t.Errorf("CRIT-5: got status %d want 401 for wrong audience", code)
+	}
+	if bad.Error != "audience_mismatch" {
+		t.Errorf("CRIT-5: error code: got %q want audience_mismatch", bad.Error)
+	}
+}
+
+// SECURITY-HIGH9-01: Error responses must not expose internal error detail.
+// A request with a malformed JSON body should return "invalid_request" with
+// an opaque reason, not the raw Go parse error.
+func TestBootstrapOIDC_ErrorLeak_MalformedJSON(t *testing.T) {
+	f := newOIDCFixture(t)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/sigils/bootstrap-oidc",
+		strings.NewReader(`{not valid json`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	f.server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("HIGH-9: got %d want 400", rec.Code)
+	}
+	body := rec.Body.String()
+	// Must NOT contain Go-level parse error fragments.
+	leakPhrases := []string{"invalid character", "unexpected EOF", "syntax error", "cannot unmarshal"}
+	for _, phrase := range leakPhrases {
+		if strings.Contains(strings.ToLower(body), strings.ToLower(phrase)) {
+			t.Errorf("HIGH-9: response body leaks internal error text %q: %s", phrase, body)
+		}
+	}
+}
+
+// SECURITY-HIGH9-02: Token-validation failures must return an opaque reason.
+func TestBootstrapOIDC_ErrorLeak_BadToken(t *testing.T) {
+	f := newOIDCFixture(t)
+	code, _, bad := f.post(BootstrapReq{
+		OIDCToken:      "not.a.real.jwt",
+		OIDCIssuer:     testIssuer,
+		Audience:       testAudience,
+		RequestedScope: "ci.deploy.preprod",
+	})
+	if code != http.StatusUnauthorized {
+		t.Errorf("HIGH-9: got %d want 401", code)
+	}
+	// Reason must be generic — no JWT library internals.
+	leakPhrases := []string{"token is malformed", "could not", "failed to", "parse error", "base64"}
+	reason := strings.ToLower(bad.Reason)
+	for _, phrase := range leakPhrases {
+		if strings.Contains(reason, phrase) {
+			t.Errorf("HIGH-9: reason field leaks internal detail %q: reason=%q", phrase, bad.Reason)
+		}
+	}
+}
+
+// SECURITY-HIGH11-01: Brute-force key must be source IP, not caller-supplied
+// issuer. A failure burst from 10.0.0.1 must not affect a valid request from
+// 10.0.0.2 using the same issuer value.
+func TestBootstrapOIDC_BruteForceKeyedOnIP(t *testing.T) {
+	f := newOIDCFixture(t)
+
+	// Drive three bad-token failures from 10.0.0.1.
+	for i := 0; i < 3; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/sigils/bootstrap-oidc",
+			strings.NewReader(`{"oidc_token":"bad","oidc_issuer":"`+testIssuer+`","audience":"`+testAudience+`","requested_scope":"ci.deploy.preprod"}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.RemoteAddr = "10.0.0.1:12345"
+		rec := httptest.NewRecorder()
+		f.server.Handler().ServeHTTP(rec, req)
+	}
+
+	// A valid request from a DIFFERENT IP must still succeed (not share the failure bucket).
+	tok := f.signIDPToken(nil)
+	raw, _ := json.Marshal(BootstrapReq{
+		OIDCToken:      tok,
+		OIDCIssuer:     testIssuer,
+		Audience:       testAudience,
+		RequestedScope: "ci.deploy.preprod",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/sigils/bootstrap-oidc", bytes.NewReader(raw))
+	req.Header.Set("Content-Type", "application/json")
+	req.RemoteAddr = "10.0.0.2:54321" // different IP
+	rec := httptest.NewRecorder()
+	f.server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Errorf("HIGH-11: valid request from different IP should succeed; got %d", rec.Code)
 	}
 }

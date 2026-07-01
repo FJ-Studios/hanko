@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/FJ-Studios/hanko/broker"
 	"github.com/FJ-Studios/hanko/store"
@@ -174,6 +175,22 @@ func TestHTTP_NewHTTPServer_Validation(t *testing.T) {
 	bogus := broker.New(store.NewMemStore(), pub[:10], priv) // truncated public key
 	if _, err := broker.NewHTTPServer(bogus); err == nil {
 		t.Errorf("truncated public key: expected error, got nil")
+	}
+}
+
+// SECURITY-HIGH10-01: Serve() must configure ReadTimeout and WriteTimeout.
+// Verifies via BuildHTTPServer() without binding a real port.
+func TestHTTPServer_ReadWriteTimeouts_Configured(t *testing.T) {
+	s, _ := newTestHTTPServer(t)
+	srv := s.BuildHTTPServer(":0")
+	if srv.ReadTimeout != 10*time.Second {
+		t.Errorf("HIGH-10: ReadTimeout: got %v want 10s", srv.ReadTimeout)
+	}
+	if srv.WriteTimeout != 10*time.Second {
+		t.Errorf("HIGH-10: WriteTimeout: got %v want 10s", srv.WriteTimeout)
+	}
+	if srv.ReadHeaderTimeout == 0 {
+		t.Errorf("HIGH-10: ReadHeaderTimeout must be set (got 0)")
 	}
 }
 
