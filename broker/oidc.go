@@ -246,6 +246,11 @@ func NewOIDCBootstrap(b *Broker, cfg OIDCConfig) (*OIDCBootstrap, error) {
 	if len(cfg.IssuerJWKSURLs) == 0 {
 		return nil, fmt.Errorf("oidc: NewOIDCBootstrap: at least one issuer JWKS URL required")
 	}
+	// SECURITY(CRIT-5): Audience MUST be configured. An empty audience would
+	// allow any caller to bypass the audience check by omitting the field.
+	if cfg.Audience == "" {
+		return nil, fmt.Errorf("oidc: NewOIDCBootstrap: HANKO_OIDC_AUDIENCE is required — empty audience bypasses audience verification")
+	}
 	if cfg.HTTPClient == nil {
 		cfg.HTTPClient = http.DefaultClient
 	}
@@ -343,8 +348,10 @@ func (h *OIDCBootstrap) Handle(w http.ResponseWriter, r *http.Request) {
 	dec := json.NewDecoder(io.LimitReader(r.Body, 64<<10))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&req); err != nil {
+		// SECURITY(HIGH-9): log full error server-side; return stable opaque code.
+		fmt.Fprintf(os.Stderr, "oidc: decode request: %v\n", err)
 		publishFail("", "invalid_request")
-		writeOIDCErr(w, http.StatusBadRequest, "invalid_request", err.Error())
+		writeOIDCErr(w, http.StatusBadRequest, "invalid_request", "request body could not be decoded")
 		return
 	}
 	if req.OIDCToken == "" || req.OIDCIssuer == "" || req.Audience == "" {
@@ -352,7 +359,11 @@ func (h *OIDCBootstrap) Handle(w http.ResponseWriter, r *http.Request) {
 		writeOIDCErr(w, http.StatusBadRequest, "invalid_request", "oidc_token, oidc_issuer, audience required")
 		return
 	}
-	if h.cfg.Audience != "" && req.Audience != h.cfg.Audience {
+	// SECURITY(CRIT-5): Audience is mandatory (enforced at boot). Always
+	// compare unconditionally — the former `cfg.Audience != ""` guard has
+	// been removed because an unconfigured audience must abort startup, not
+	// silently skip the check here.
+	if req.Audience != h.cfg.Audience {
 		publishFail("", "audience_mismatch")
 		writeOIDCErr(w, http.StatusUnauthorized, "audience_mismatch", "configured audience mismatch")
 		return
@@ -377,10 +388,14 @@ func (h *OIDCBootstrap) Handle(w http.ResponseWriter, r *http.Request) {
 
 	claims, err := h.verifyJWT(r.Context(), req.OIDCToken, jwksURL, req.OIDCIssuer, req.Audience)
 	if err != nil {
+		// SECURITY(HIGH-9): log full error server-side; return opaque stable code.
+		fmt.Fprintf(os.Stderr, "oidc: verifyJWT issuer=%s: %v\n", req.OIDCIssuer, err)
 		publishFail("", "invalid_token")
-		// W6.11.4: brute-force tracking on token failures.
-		h.bruteForce.RecordFailure(req.OIDCIssuer)
-		writeOIDCErr(w, http.StatusUnauthorized, "invalid_token", err.Error())
+		// SECURITY(HIGH-11): key brute-force detection on source IP, NOT caller-supplied issuer.
+		// Caller controls req.OIDCIssuer so keying on it lets an attacker fragment their
+		// attempts across unlimited virtual keys to evade the sliding-window counter.
+		h.bruteForce.RecordFailure(clientIP(r))
+		writeOIDCErr(w, http.StatusUnauthorized, "invalid_token", "token validation failed")
 		return
 	}
 
@@ -418,8 +433,10 @@ func (h *OIDCBootstrap) Handle(w http.ResponseWriter, r *http.Request) {
 	expiresAt := h.cfg.Now().Add(ttl)
 	capTok, err := h.broker.IssueCap(row.MappedSigil, scopeJoined, expiresAt)
 	if err != nil {
+		// SECURITY(HIGH-9): do not expose internal error text to caller.
+		fmt.Fprintf(os.Stderr, "oidc: IssueCap sigil=%s: %v\n", row.MappedSigil, err)
 		publishFail(row.MappedSigil, "mint_failed")
-		writeOIDCErr(w, http.StatusInternalServerError, "mint_failed", err.Error())
+		writeOIDCErr(w, http.StatusInternalServerError, "mint_failed", "internal error")
 		return
 	}
 
@@ -441,8 +458,10 @@ func (h *OIDCBootstrap) Handle(w http.ResponseWriter, r *http.Request) {
 
 	jws, err := h.signCapJWT(capTok, row, scopeJoined, expiresAt)
 	if err != nil {
+		// SECURITY(HIGH-9): do not expose internal error text to caller.
+		fmt.Fprintf(os.Stderr, "oidc: signCapJWT sigil=%s: %v\n", row.MappedSigil, err)
 		publishFail(row.MappedSigil, "sign_failed")
-		writeOIDCErr(w, http.StatusInternalServerError, "sign_failed", err.Error())
+		writeOIDCErr(w, http.StatusInternalServerError, "sign_failed", "internal error")
 		return
 	}
 
@@ -558,4 +577,54 @@ func scopesSubset(requested, allowed []string) bool {
 		}
 	}
 	return true
+}
+
+// clientIP extracts the best-available source IP for rate-limiting purposes.
+// SECURITY(HIGH-11): keying brute-force detection on caller-controlled fields
+// (e.g. OIDCIssuer) lets an attacker fragment across unlimited virtual keys.
+// We prefer X-Forwarded-For when the broker is behind a trusted reverse proxy
+// (e.g. Caddy). RemoteAddr is used directly otherwise.
+//
+// Note: X-Forwarded-For is trusted only if the broker topology places a
+// trusted proxy in front (Tailscale + Caddy per the W2 spec). If the broker
+// is ever exposed directly without a proxy, set HANKO_TRUST_PROXY=0 to
+// force RemoteAddr only (future flag; today the topology assumption holds).
+func clientIP(r *http.Request) string {
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		// XFF may be a comma-separated list; take the first (client-supplied) value.
+		// The proxy appends its own; the leftmost is the original client.
+		parts := strings.SplitN(xff, ",", 2)
+		ip := strings.TrimSpace(parts[0])
+		if ip != "" {
+			return ip
+		}
+	}
+	// Strip port from RemoteAddr.
+	addr := r.RemoteAddr
+	if host, _, err := splitHostPort(addr); err == nil {
+		return host
+	}
+	return addr
+}
+
+// splitHostPort is a thin wrapper around net.SplitHostPort to avoid importing
+// "net" just for this helper. We inline the logic to keep deps minimal.
+func splitHostPort(hostport string) (host, port string, err error) {
+	// Find the last colon; handles IPv6 [::1]:port correctly because the
+	// bracket pair ends before the colon.
+	i := strings.LastIndex(hostport, ":")
+	if i < 0 {
+		return hostport, "", nil
+	}
+	if strings.HasPrefix(hostport, "[") {
+		// IPv6: "[::1]:port"
+		end := strings.Index(hostport, "]")
+		if end < 0 {
+			return "", "", fmt.Errorf("missing ] in address")
+		}
+		host = hostport[1:end]
+		port = hostport[end+2:]
+		return host, port, nil
+	}
+	return hostport[:i], hostport[i+1:], nil
 }

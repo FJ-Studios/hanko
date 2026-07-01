@@ -185,17 +185,29 @@ func (s *HTTPServer) handleJWKS(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(s.jwksDocument)
 }
 
+// BuildHTTPServer constructs the *http.Server for this HTTPServer with the
+// production timeout values. Exported so tests can assert on the configured
+// fields without binding a real port.
+//
+// SECURITY(HIGH-10): ReadTimeout + WriteTimeout prevent Slowloris and
+// response-stream-stall attacks. ReadHeaderTimeout alone is insufficient —
+// an attacker can send headers immediately then drip-feed the body.
+func (s *HTTPServer) BuildHTTPServer(addr string) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           s.mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       30 * time.Second,
+	}
+}
+
 // Serve runs the HTTP server on `addr` until ctx is cancelled or an
 // error fires. Used by the `hanko-broker serve` CLI subcommand.
 //
 // The shutdown grace period is 5 seconds — long enough for in-flight
 // requests to drain, short enough to not stall ansible deploys.
 func (s *HTTPServer) Serve(addr string) error {
-	srv := &http.Server{
-		Addr:              addr,
-		Handler:           s.mux,
-		ReadHeaderTimeout: 5 * time.Second,
-		IdleTimeout:       30 * time.Second,
-	}
-	return srv.ListenAndServe()
+	return s.BuildHTTPServer(addr).ListenAndServe()
 }
