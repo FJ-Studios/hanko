@@ -1,6 +1,6 @@
 
 # kagami / shikki local test artifacts
-.shikki/
+.shikki/*
 !.shikki/agent-rules.md
 !.shikki/rules/
 !.shikki/rules/*.md
