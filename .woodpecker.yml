@@ -1,0 +1,17 @@
+# ─── Woodpecker CI — hanko kagami e2e ship-gate ──────────────────────────────
+# Non-vault e2e scope for Hanko OIDC broker scenarios.
+# Runs on every PR + push to main.
+# Part of Master Spec §1.4 — shi-secrets-hanko-beta cluster.
+
+when:
+  event: [pull_request, push]
+  branch: [main, develop, "feat/*", "fix/*"]
+
+steps:
+  - name: kagami-e2e-no-vault
+    image: shikki/kagami-runner:latest
+    commands:
+      - kagami test --strict --scope e2e-hanko-broker-no-vault
+    when:
+      event: [pull_request, push]
+      branch: [main, develop]
