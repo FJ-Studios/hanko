@@ -1,6 +1,18 @@
 
 # kagami / shikki local test artifacts
-.shikki/
+.shikki/*
+!.shikki/agent-rules.md
+!.shikki/rules/
+!.shikki/rules/*.md
+!.shikki/team/
+!.shikki/team/*.md
+!.shikki/mokuroku.json
+!.shikki/mokuroku.md
+!.shikki/mokuroku.toml
+!.shikki/mokuroku.swift
+!.shikki/doctor/
+!.shikki/doctor/*.md
+!.shikki/doctor/*.json
 .kagami/
 !.kagami/scopes.toml
 !.kagami/scopes-override.toml
